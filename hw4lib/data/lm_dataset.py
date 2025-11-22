@@ -83,11 +83,9 @@ class LMDataset(Dataset):
             "subset",
             f"{self.partition}_subset",
         ]
-        subset_size = None
-        for k in subset_key_candidates:
-            if k in self.config:
-                subset_size = self.config[k]
-                break
+        subset_size = self.config.get("subset_size", None)
+        if subset_size is not None:
+            self.text_files = self.text_files[:int(subset_size)]
 
         if subset_size is not None and subset_size > 0:
             self.text_files = self.text_files[:subset_size]

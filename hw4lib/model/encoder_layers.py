@@ -4,28 +4,10 @@ from typing import Tuple, Optional
 from .sublayers import SelfAttentionLayer, FeedForwardLayer
 
 '''
-TODO: Implement this Module.
-
-This file contains the encoder layer implementation used in transformer architectures:
-
 SelfAttentionEncoderLayer: Used in encoder part of transformers
 - Contains self-attention and feed-forward sublayers
-- Unlike decoder, does not use causal masking (can attend to all positions)
-- Used for tasks like encoding input sequences where bidirectional context is needed
-
-The layer follows a Pre-LN (Layer Normalization) architecture where:
-- Layer normalization is applied before each sublayer operation
-- Residual connections wrap around each sublayer
-
-Implementation Steps:
-1. Initialize the required sublayers in __init__:
-   - SelfAttentionLayer for self-attention (no causal mask needed)
-   - FeedForwardLayer for position-wise processing
-
-2. Implement the forward pass to:
-   - Apply sublayers in the correct order
-   - Pass appropriate padding masks (no causal mask needed)
-   - Return both outputs and attention weights
+- No causal mask (encoder can attend to all positions)
+- Pre-LN with residual connections
 '''
 
 class SelfAttentionEncoderLayer(nn.Module):
@@ -43,29 +25,42 @@ class SelfAttentionEncoderLayer(nn.Module):
             dropout (float): The dropout rate.
         '''
         super().__init__()
-        # TODO: Implement __init__
+        # self-attention (no causal mask)
+        self.self_attn = SelfAttentionLayer(
+            d_model=d_model,
+            num_heads=num_heads,
+            dropout=dropout,
+        )
+        # position-wise feed-forward
+        self.ffn = FeedForwardLayer(
+            d_model=d_model,
+            d_ff=d_ff,
+            dropout=dropout,
+        )
 
-        # TODO: Initialize the sublayers      
-        self.self_attn = NotImplementedError # Self-attention layer
-        self.ffn = NotImplementedError # Feed-forward network
-        raise NotImplementedError # Remove once implemented
-
-    def forward(self, x: torch.Tensor, key_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         '''
         Forward pass for the EncoderLayer.
         Args:
-            x (torch.Tensor): The input tensor. shape: (batch_size, seq_len, d_model)   
-            key_padding_mask (torch.Tensor): The padding mask for the input. shape: (batch_size, seq_len)
+            x (torch.Tensor): (batch_size, seq_len, d_model)   
+            key_padding_mask (torch.Tensor): (batch_size, seq_len), True at PAD positions
 
         Returns:
-            x (torch.Tensor): The output tensor. shape: (batch_size, seq_len, d_model)
-            mha_attn_weights (torch.Tensor): The attention weights. shape: (batch_size, seq_len, seq_len)   
+            x (torch.Tensor): (batch_size, seq_len, d_model)
+            mha_attn_weights (torch.Tensor): (batch_size, seq_len, seq_len)
         '''
-        # TODO: Implement forward: Follow the figure in the writeup
+        # self-attention (no causal mask)
+        x, mha_attn_weights = self.self_attn(
+            x,
+            key_padding_mask=key_padding_mask,
+            attn_mask=None,     # encoder is fully bidirectional
+        )
 
-        # What will be different from decoder self-attention layer?
-        x, mha_attn_weights = NotImplementedError, NotImplementedError
-        
-        # TODO: Return the output tensor and attention weights
-        raise NotImplementedError # Remove once implemented
+        # feed-forward
+        x = self.ffn(x)
 
+        return x, mha_attn_weights
