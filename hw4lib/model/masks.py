@@ -25,16 +25,12 @@ def PadMask(padded_input, input_lengths):
             - padding positions are marked with True 
             - non-padding positions are marked with False.
     """
-    # TODO: Implement PadMask
-    N, T = padded_input.shape[0], padded_input.shape[1]
-    device = padded_input.device
+    batchSize, seqLen = padded_input.shape[:2]
+    lengths = input_lengths.to(padded_input.device).view(batchSize, 1)
 
-    # shape: (1, T)
-    time_index = torch.arange(T, device=device).unsqueeze(0)
-    # shape: (N, 1)
-    lengths = input_lengths.to(device).unsqueeze(1)
-
-    mask = time_index >= lengths  # (N, T) bool
+    idx = torch.arange(seqLen, device=padded_input.device).view(1, seqLen)
+    mask = idx >= lengths
+    
     return mask
 
 ''' 
