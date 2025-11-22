@@ -309,60 +309,30 @@ class EncoderDecoderTransformer(nn.Module):
         if weight_tying:
             self.target_embedding.weight = self.final_linear.weight
 
-    def encode(self, padded_sources: torch.Tensor, source_lengths: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, dict]:
-        '''
-        Encodes the source features into a sequence of hidden states.
-        Args:
-            padded_sources: The padded source sequences. shape: (batch_size, src_len, input_dim)
-            source_lengths: The lengths of source sequences. shape: (batch_size,)
-        Returns:
-            x_enc: Encoded representation. shape: (batch_size, src_len, d_model)
-            pad_mask_src: Source padding mask. shape: (batch_size, src_len)
-            running_att: Dictionary containing encoder self-attention weights
-            ctc_inputs: Dictionary of CTC input and source lengths. shape: (src_len, batch_size, d_model), (batch_size,) 
-                        Keys: 'log_probs' and 'lengths'
-                        Required for CTC loss computation
-        '''
-
-        # TODO: Implement encode
-
-        # TODO: Apply speech embedding
+    def encode(self, padded_sources, source_lengths):
         x_enc, x_enc_lengths = self.source_embedding(padded_sources, source_lengths)
-        
-        # TODO: Apply positional encoding if not skipped
-        # You can try to optionally skipping positional encoding if using an LSTM based speech embedding
-        # LSTM embeddings on their own can be sufficient to capture the positional information    
+
         if not self.skip_encoder_pe:
             x_enc = self.positional_encoding(x_enc)
-        
-        # TODO: Apply dropout
         x_enc = self.dropout(x_enc)
 
-        # TODO: Create source padding mask on the same device as the input
         pad_mask_src = PadMask(x_enc, x_enc_lengths)
 
-        # TODO: Pass through encoder layers and save attention weights
         running_att = {}
         for i in range(self.num_encoder_layers):
-            # Optionally apply LayerDrop during training (More regularization!)
             if self.training and self.layer_drop_rate > 0 and random.random() < self.layer_drop_rate:
                 continue
-            # TODO: Pass through encoder layer
             x_enc, attention = self.enc_layers[i](x_enc, key_padding_mask=pad_mask_src)
-            
-            # Save attention weights
-            running_att[f'layer{i+1}_enc_self'] = attention
+            running_att[f"layer{i+1}_enc_self"] = attention
 
-        # TODO: Apply normalization
         x_enc = self.encoder_norm(x_enc)
-        # TODO: Project to CTC logits
-        ctc_logits = self.ctc_head(x_enc)  # (B, T, num_classes)
-        ctc_log_probs = ctc_logits.transpose(0, 1)  # (T, B, num_classes)
 
-        # TODO: Return the encoded representation, padding mask, running attention weights, and CTC inputs (see docstring)
+        ctc_logits = self.ctc_head(x_enc)          # (B, T_enc, V)
+        ctc_log_probs = ctc_logits.transpose(0, 1) # (T_enc, B, V)
+
         ctc_inputs = {
-            'log_probs': ctc_log_probs,
-            'lengths': x_enc_lengths,
+            "log_probs": ctc_log_probs,
+            "lengths": x_enc_lengths,              # <- use returned lengths here
         }
         return x_enc, pad_mask_src, running_att, ctc_inputs
 
@@ -440,9 +410,9 @@ class EncoderDecoderTransformer(nn.Module):
         padded_sources: torch.Tensor,
         padded_targets: torch.Tensor,
         source_lengths: Optional[torch.Tensor] = None,
-        target_lengths: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, dict]:
-        '''
+        target_lengths: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, dict, dict]:
+        """
         Forward pass for the encoder-decoder transformer.
         
         Args:
@@ -454,35 +424,37 @@ class EncoderDecoderTransformer(nn.Module):
         Returns:
             seq_out: The output sequence logits. shape: (batch_size, tgt_len, num_classes)
             running_att: Dictionary containing all attention weights from both encoder and decoder
-            ctc_inputs: Dictionary of CTC input and source lengths. shape: (src_len, batch_size, d_model), (batch_size,) 
-                        Keys: 'log_probs' and 'lengths'
-                        Required for CTC loss computation
-        '''
-        # During training, we need target lengths
+            ctc_inputs: Dict with:
+                - 'log_probs': (T_enc, batch_size, num_classes)
+                - 'lengths'  : (batch_size,)
+        """
+        # During training, we need lengths
         if self.training and target_lengths is None:
             raise ValueError("target_lengths must be provided during training")
 
         if self.training and source_lengths is None:
             raise ValueError("source_lengths must be provided during training")
-        
-        # TODO: Implement forward
 
-        # TODO: Encode the source sequence
-        encoder_output, pad_mask_src, enc_running_att, ctc_inputs = self.encode(padded_sources, source_lengths)
-        
-        # TODO: Decode using encoder output
+        # 1) Encode the source sequence
+        encoder_output, pad_mask_src, enc_running_att, ctc_inputs = self.encode(
+            padded_sources,
+            source_lengths,
+        )
+
+        # 2) Decode using encoder output
         seq_out, dec_running_att = self.decode(
             padded_targets,
             encoder_output,
             target_lengths=target_lengths,
             pad_mask_src=pad_mask_src,
         )
-        
-        # Combine attention dictionaries
+
+        # 3) Combine encoder + decoder attention maps
         running_att = {**enc_running_att, **dec_running_att}
-        
-        # TODO: Return the output sequence, running attention weights, and CTC inputs (see docstring)
+
+        # 4) Return logits, attention, and CTC info
         return seq_out, running_att, ctc_inputs
+
 
     def score(self, batch_prompts: torch.Tensor, encoder_output: torch.Tensor, pad_mask_src: torch.Tensor) -> torch.Tensor:
         '''
@@ -634,3 +606,4 @@ def test_decoder_only(num_layers: int = 12, num_heads: int = 8, d_model: int = 5
 
 if __name__ == "__main__":
     test_decoder_only()
+
