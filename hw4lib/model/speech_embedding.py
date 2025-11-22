@@ -253,59 +253,79 @@ class Conv2DSubsampling(torch.nn.Module):
 ## SpeechEmbedding Class
 ## -------------------------------------------------------------------------------------------------        
 class SpeechEmbedding(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, time_reduction: int = 6, 
-                 reduction_method: str = 'lstm', dropout: float = 0.0):
+    def __init__(
+        self,
+        # Original names
+        input_dim: int = None,
+        output_dim: int = None,
+        time_reduction: int = 6,
+        reduction_method: str = "lstm",
+        dropout: float = 0.0,
+        # Extra aliases for homework code / tests
+        num_feats: int = None,
+        d_model: int = None,
+    ):
         """
         Args:
-            input_dim (int): Input feature dimension
-            output_dim (int): Output feature dimension
+            input_dim / num_feats (int): Input feature dimension
+            output_dim / d_model (int): Output feature dimension
             time_reduction (int): Total time reduction factor
-            reduction_method (str): Where to apply time reduction - 'conv', 'lstm', or 'both'
+            reduction_method (str): 'conv', 'lstm', or 'both'
             dropout (float): Dropout rate
         """
         super(SpeechEmbedding, self).__init__()
-        
+
+        # --- Resolve alias args so both call styles work ---
+        if input_dim is None:
+            if num_feats is None:
+                raise ValueError("Either input_dim or num_feats must be provided")
+            input_dim = num_feats
+
+        if output_dim is None:
+            if d_model is None:
+                raise ValueError("Either output_dim or d_model must be provided")
+            output_dim = d_model
+
         if not all(x > 0 for x in [input_dim, output_dim, time_reduction]):
             raise ValueError("All dimension values must be positive")
         if not 0 <= dropout < 1:
             raise ValueError("Dropout rate must be between 0 and 1")
-        if reduction_method not in ['conv', 'lstm', 'both']:
+        if reduction_method not in ["conv", "lstm", "both"]:
             raise ValueError("reduction_method must be 'conv', 'lstm', or 'both'")
 
         self.embedding_dim = output_dim
         self.reduction_method = reduction_method
 
-        # Calculate time reduction factors for conv and lstm
-        if reduction_method == 'conv':
+        # --- Decide how much reduction goes to conv vs lstm ---
+        if reduction_method == "conv":
             conv_reduction = time_reduction
             lstm_reduction = 1
-        elif reduction_method == 'lstm':
+        elif reduction_method == "lstm":
             conv_reduction = 1
             lstm_reduction = time_reduction
         else:  # 'both'
             # Split reduction between conv and lstm (try to make them similar)
             lstm_reduction, conv_reduction = self.closest_factors(time_reduction)
 
-        # Initialize layers based on reduction method
         self.cnn = None
         self.blstm = None
-        
-        if reduction_method in ['conv', 'both']:
+
+        if reduction_method in ["conv", "both"]:
             self.cnn = Conv2DSubsampling(
-                input_dim, 
-                self.embedding_dim, 
+                input_dim,
+                self.embedding_dim,
                 dropout=dropout,
-                time_reduction=conv_reduction
+                time_reduction=conv_reduction,
             )
 
-        if reduction_method in ['lstm', 'both']:
+        if reduction_method in ["lstm", "both"]:
             lstm_input_dim = self.embedding_dim if self.cnn else input_dim
             self.blstm = StackedBLSTMEmbedding(
                 input_dim=lstm_input_dim,
                 hidden_dim=self.embedding_dim,
                 output_dim=self.embedding_dim,
                 time_reduction=lstm_reduction,
-                dropout=dropout
+                dropout=dropout,
             )
 
     def closest_factors(self, n):
@@ -318,27 +338,28 @@ class SpeechEmbedding(nn.Module):
     def forward(self, x, x_len):
         """
         Args:
-            x     : Input tensor (batch_size, seq_len, input_dim)
-            x_len : Non-padded lengths (batch_size)
+            x     : (batch_size, seq_len, input_dim)
+            x_len : (batch_size,)
         Returns:
-            tuple: (output tensor, downsampled lengths)
+            (output, output_lengths)
         """
         if self.cnn is not None:
             x, x_len = self.cnn(x, x_len)
         if self.blstm is not None:
             x, x_len = self.blstm(x, x_len)
         return x, x_len
-    
+
     def calculate_downsampled_length(self, lengths: torch.Tensor) -> torch.Tensor:
         """
         Calculate the downsampled length for a given sequence length.
         """
         if self.cnn is not None:
-            lengths = self.cnn.calculate_downsampled_length(lengths, self.cnn.time_stride1, self.cnn.time_stride2)
+            lengths = self.cnn.calculate_downsampled_length(
+                lengths, self.cnn.time_stride1, self.cnn.time_stride2
+            )
         if self.blstm is not None:
             lengths = self.blstm.calculate_downsampled_length(lengths)
         return lengths
-
 
 ## -------------------------------------------------------------------------------------------------
 ## Test Cases
