@@ -369,10 +369,11 @@ class ASRTrainer(BaseTrainer):
                 print(f"Evaluating with {config_name} config")
                 results = self.recognize(dataloader, config, config_name, max_length)     
                 # Calculate metrics on full batch
+                ids = [r.get('id', idx) for idx, r in enumerate(results)]
                 generated = [r['generated'] for r in results]
                 results_df = pd.DataFrame(
                     {
-                        'id': range(len(generated)),
+                        'id': ids,
                         'transcription': generated
                     }
                 )
@@ -434,8 +435,15 @@ class ASRTrainer(BaseTrainer):
 
         # Initialize variables
         self.model.eval()
-        batch_bar = tqdm(total=len(dataloader), dynamic_ncols=True, leave=False, position=0, desc=f"[Recognizing ASR] : {config_name}")
+        batch_bar = tqdm(
+            total=len(dataloader),
+            dynamic_ncols=True,
+            leave=False,
+            position=0,
+            desc=f"[Recognizing ASR] : {config_name}"
+        )
         results = []
+        next_result_id = 0
 
         # Run inference
         with torch.inference_mode():
@@ -503,6 +511,7 @@ class ASRTrainer(BaseTrainer):
                     post_processed_targets = generator.post_process_sequence(targets_golden, self.tokenizer)
                     for j, (pred, target) in enumerate(zip(post_processed_preds, post_processed_targets)):
                         results.append({
+                            'id': next_result_id + j,
                             'target': self.tokenizer.decode(target.tolist(), skip_special_tokens=True),
                             'generated': self.tokenizer.decode(pred.tolist(), skip_special_tokens=True),
                             'score': scores[j].item()
@@ -510,9 +519,12 @@ class ASRTrainer(BaseTrainer):
                 else:
                     for j, pred in enumerate(post_processed_preds):
                         results.append({
+                            'id': next_result_id + j,
                             'generated': self.tokenizer.decode(pred.tolist(), skip_special_tokens=True),
                             'score': scores[j].item()
                         })
+
+                next_result_id += len(post_processed_preds)
 
                 batch_bar.update()
 
@@ -520,6 +532,20 @@ class ASRTrainer(BaseTrainer):
                     break
 
             batch_bar.close()
+
+            expected_total = None
+            if recognition_config.get('num_batches') is None and hasattr(dataloader, 'dataset'):
+                try:
+                    expected_total = len(dataloader.dataset)
+                except Exception:
+                    expected_total = None
+
+            if expected_total is not None and len(results) != expected_total:
+                print(
+                    f"Warning: collected {len(results)} results but dataset reports {expected_total}. "
+                    "Ensure submission aggregation is not limited to the last batch."
+                )
+
             return results
 
 
