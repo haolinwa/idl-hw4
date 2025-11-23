@@ -26,7 +26,31 @@ def PadMask(padded_input, input_lengths):
             - non-padding positions are marked with False.
     """
     batchSize, seqLen = padded_input.shape[:2]
-    lengths = input_lengths.to(padded_input.device).view(batchSize, 1)
+    
+    lengths = input_lengths.to(padded_input.device)
+
+    # Support both 1D length tensors and higher-dimensional inputs (e.g.,
+    # per-timestep indicators). In the latter case, reduce across all
+    # non-batch dimensions to recover one length per sequence.
+    if lengths.dim() > 1:
+        if lengths.shape[0] != batchSize:
+            raise ValueError(
+                f"input_lengths has incompatible batch dimension: expected {batchSize}, got {lengths.shape[0]}"
+            )
+        reduce_dims = list(range(1, lengths.dim()))
+        lengths = lengths.sum(dim=reduce_dims)
+
+    # If a flat tensor is provided but doesn't match the batch dimension,
+    # attempt to reshape using the known batch size. This handles cases where
+    # lengths arrive as a flattened per-timestep indicator (batch_size * seq_len).
+    if lengths.dim() == 1 and lengths.numel() != batchSize:
+        if lengths.numel() % batchSize != 0:
+            raise ValueError(
+                f"input_lengths size {lengths.numel()} is incompatible with batch size {batchSize}"
+            )
+        lengths = lengths.view(batchSize, -1).sum(dim=1)
+
+    lengths = lengths.view(batchSize, 1)
 
     idx = torch.arange(seqLen, device=padded_input.device).view(1, seqLen)
     mask = idx >= lengths
@@ -63,4 +87,6 @@ def CausalMask(padded_input):
     # upper-triangular (excluding diagonal) are non-causal (True)
     mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=device), diagonal=1)
     return mask
+
+
 
