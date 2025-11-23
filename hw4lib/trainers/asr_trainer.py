@@ -114,8 +114,8 @@ class ASRTrainer(BaseTrainer):
                 # TODO: get raw predictions and attention weights and ctc inputs from model
                 seq_out, curr_att, ctc_inputs = self.model(
                     feats,
-                    feat_lengths,
                     targets_shifted,
+                    feat_lengths,
                     transcript_lengths
                 )
                 
@@ -132,16 +132,36 @@ class ASRTrainer(BaseTrainer):
                 
                 # TODO: Calculate CTC loss if needed
                 if self.ctc_weight > 0 and self.ctc_criterion is not None and ctc_inputs is not None:
+                    ctc_input_lengths = None
+                    ctc_log_probs = None
+
                     if isinstance(ctc_inputs, dict):
-                        ctc_logits = ctc_inputs["logits"]
-                        ctc_input_lengths = ctc_inputs["logit_lengths"]
+                        # Handle both log-prob and raw-logit inputs
+                        if "log_probs" in ctc_inputs:
+                            ctc_log_probs = ctc_inputs["log_probs"]
+                        elif "logits" in ctc_inputs:
+                            ctc_logits = ctc_inputs["logits"]
+                            if ctc_logits.shape[0] == feats.size(0):
+                                ctc_logits = ctc_logits.transpose(0, 1)
+                            ctc_log_probs = F.log_softmax(ctc_logits, dim=-1)
+                        else:
+                            raise KeyError("CTC inputs must include 'log_probs' or 'logits'")
+
+                        if "lengths" in ctc_inputs:
+                            ctc_input_lengths = ctc_inputs["lengths"]
+                        elif "logit_lengths" in ctc_inputs:
+                            ctc_input_lengths = ctc_inputs["logit_lengths"]
+                        else:
+                            raise KeyError("CTC inputs must include 'lengths' or 'logit_lengths'")
                     else:
                         ctc_logits, ctc_input_lengths = ctc_inputs
+                        if ctc_logits.shape[0] == feats.size(0):
+                            ctc_logits = ctc_logits.transpose(0, 1)
+                        ctc_log_probs = F.log_softmax(ctc_logits, dim=-1)
 
-                    # Assume (B, T_ctc, C) -> (T_ctc, B, C)
-                    if ctc_logits.shape[0] == feats.size(0):
-                        ctc_logits = ctc_logits.transpose(0, 1)
-                    ctc_log_probs = F.log_softmax(ctc_logits, dim=-1)
+                    # Ensure (T_ctc, B, C)
+                    if ctc_log_probs.shape[0] == feats.size(0):
+                        ctc_log_probs = ctc_log_probs.transpose(0, 1)
 
                     pad_id = self.tokenizer.pad_id
                     target_mask = targets_golden != pad_id
@@ -390,7 +410,8 @@ class ASRTrainer(BaseTrainer):
         if recognition_config is None:
             # Default config (greedy search)
             recognition_config = {
-                'num_batches': 5,
+                # Process the full dataloader by default
+                'num_batches': None,
                 'beam_width': 1,
                 'temperature': 1.0,
                 'repeat_penalty': 1.0,
