@@ -114,8 +114,8 @@ class ASRTrainer(BaseTrainer):
                 # TODO: get raw predictions and attention weights and ctc inputs from model
                 seq_out, curr_att, ctc_inputs = self.model(
                     feats,
-                    feat_lengths,
                     targets_shifted,
+                    feat_lengths,
                     transcript_lengths
                 )
                 
