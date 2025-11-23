@@ -43,7 +43,11 @@ class ASRDataset(Dataset):
         )
 
         # subset handling (same style as LM dataset)
+        # Always keep the full test set so recognition writes all rows (e.g., 2620)
         subset = self.config.get("subset", 1.0)
+        if self.partition == "test-clean" and subset < 1.0:
+            subset = 1.0
+
         if subset < 1.0:
             subset_size = max(1, int(len(self.fbank_files) * subset))
             self.fbank_files = self.fbank_files[:subset_size]
