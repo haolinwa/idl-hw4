@@ -316,15 +316,29 @@ class SpeechEmbedding(nn.Module):
             lstm_reduction, conv_reduction = self.closest_factors(time_reduction)
 
         self.cnn = None
+        self.cnn_dropout = None
         self.blstm = None
 
         if reduction_method in ["conv", "both"]:
-            self.cnn = Conv2DSubsampling(
-                input_dim,
-                self.embedding_dim,
-                dropout=dropout,
-                time_reduction=conv_reduction,
-            )
+            try:
+                self.cnn = Conv2DSubsampling(
+                    input_dim,
+                    self.embedding_dim,
+                    dropout=dropout,
+                    time_reduction=conv_reduction,
+                )
+            except TypeError as exc:
+                if "dropout" not in str(exc):
+                    raise
+                # Fallback for Conv2DSubsampling implementations that do not
+                # accept a dropout argument. Apply dropout after the module
+                # instead to maintain comparable regularization.
+                self.cnn = Conv2DSubsampling(
+                    input_dim,
+                    self.embedding_dim,
+                    time_reduction=conv_reduction,
+                )
+                self.cnn_dropout = nn.Dropout(dropout)
 
         if reduction_method in ["lstm", "both"]:
             lstm_input_dim = self.embedding_dim if self.cnn else input_dim
@@ -353,6 +367,8 @@ class SpeechEmbedding(nn.Module):
         """
         if self.cnn is not None:
             x, x_len = self.cnn(x, x_len)
+            if self.cnn_dropout is not None:
+                x = self.cnn_dropout(x)
         if self.blstm is not None:
             x, x_len = self.blstm(x, x_len)
         return x, x_len

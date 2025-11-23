@@ -95,6 +95,7 @@ class BaseTrainer(ABC):
         self.scheduler = None  # Will be set when training starts
         self.scaler = torch.amp.GradScaler(device=self.device)
         self.use_wandb = config['training'].get('use_wandb', False)
+        self.wandb_run = None
         # Initialize experiment directories
         self.expt_root, self.checkpoint_dir, self.attn_dir, self.text_dir, \
         self.best_model_path, self.last_model_path = self._init_experiment(run_name, config_file)
@@ -188,20 +189,33 @@ class BaseTrainer(ABC):
         # Wandb initialization
         if self.use_wandb:
             """Initialize Weights & Biases logging."""
-            run_id = self.config['training'].get('wandb_run_id', None)
-            if run_id and run_id.lower() != "none":
-                self.wandb_run = wandb.init(
-                    project=self.config['training'].get('wandb_project', 'default-project'),
-                    id=run_id,
-                    resume="must",
-                    config=self.config
+            try:
+                wandb_settings = wandb.Settings(
+                    init_timeout=self.config['training'].get('wandb_init_timeout', 45)
                 )
-            else:
-                self.wandb_run = wandb.init(
-                    project=self.config['training'].get('wandb_project', 'default-project'),
-                    config=self.config,
-                    name=run_name
+                run_id = self.config['training'].get('wandb_run_id', None)
+                if run_id and run_id.lower() != "none":
+                    self.wandb_run = wandb.init(
+                        project=self.config['training'].get('wandb_project', 'default-project'),
+                        id=run_id,
+                        resume="must",
+                        config=self.config,
+                        settings=wandb_settings
+                    )
+                else:
+                    self.wandb_run = wandb.init(
+                        project=self.config['training'].get('wandb_project', 'default-project'),
+                        config=self.config,
+                        name=run_name,
+                        settings=wandb_settings
+                    )
+            except Exception as e:
+                print(
+                    "⚠️  wandb initialization failed (" + str(e) + "). "
+                    "Disabling wandb logging for this run."
                 )
+                self.use_wandb = False
+                self.wandb_run = None
 
         return expt_root, checkpoint_dir, attn_dir, text_dir, best_model_path, last_model_path
 
