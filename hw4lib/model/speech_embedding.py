@@ -172,8 +172,15 @@ class StackedBLSTMEmbedding(nn.Module):
 ## Conv2DSubsampling Class
 ## -------------------------------------------------------------------------------------------------    
 class Conv2DSubsampling(torch.nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, dropout: float = 0.0, 
-                 time_reduction: int = 2, kernel_size: int = 3):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        dropout: float = 0.0,
+        time_reduction: int = 2,
+        kernel_size: int = 3,
+        **_: dict,
+    ):
         """
         Conv2dSubsampling module with time-only downsampling.
         
@@ -183,6 +190,7 @@ class Conv2DSubsampling(torch.nn.Module):
             dropout (float): Dropout rate (default: 0.0)
             time_reduction (int): Total stride along the time dimension (default: 1)
             kernel_size (int): Size of the convolutional kernel (default: 3)
+            **_ (dict): Unused extra keyword arguments for compatibility
         """
         super(Conv2DSubsampling, self).__init__()
         
