@@ -26,7 +26,7 @@ def PadMask(padded_input, input_lengths):
             - non-padding positions are marked with False.
     """
     batchSize, seqLen = padded_input.shape[:2]
-
+    
     lengths = input_lengths.to(padded_input.device)
 
     # Support both 1D length tensors and higher-dimensional inputs (e.g.,
@@ -87,4 +87,6 @@ def CausalMask(padded_input):
     # upper-triangular (excluding diagonal) are non-causal (True)
     mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=device), diagonal=1)
     return mask
+
+
 

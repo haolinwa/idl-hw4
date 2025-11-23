@@ -310,29 +310,57 @@ class EncoderDecoderTransformer(nn.Module):
             self.target_embedding.weight = self.final_linear.weight
 
     def encode(self, padded_sources, source_lengths):
+        """
+        Encode the source (speech) sequence.
+
+        Args:
+            padded_sources: (B, T_src, input_dim)
+            source_lengths: (B,) OR (B, T_src) if it's a mask
+
+        Returns:
+            x_enc:        (B, T_enc, d_model)
+            pad_mask_src: (B, T_enc) boolean mask
+            running_att:  dict of encoder self-attention maps
+            ctc_inputs:   {
+                             "log_probs": (T_enc, B, V),
+                             "lengths":   (B,)
+                          }
+        """
+        # 🔹 1) Make sure source_lengths is 1D: (B,)
+        # If it's something like a mask (B, T), convert it to lengths
+        if source_lengths.dim() > 1:
+            # e.g., lengths as a mask: sum over time
+            source_lengths = source_lengths.sum(dim=1)
+
+        # 🔹 2) Run through SpeechEmbedding (this will downsample in time)
         x_enc, x_enc_lengths = self.source_embedding(padded_sources, source_lengths)
 
+        # 🔹 3) Positional encoding + dropout
         if not self.skip_encoder_pe:
             x_enc = self.positional_encoding(x_enc)
         x_enc = self.dropout(x_enc)
 
+        # 🔹 4) Build padding mask from downsampled lengths
         pad_mask_src = PadMask(x_enc, x_enc_lengths)
 
+        # 🔹 5) Encoder stack
         running_att = {}
         for i in range(self.num_encoder_layers):
             if self.training and self.layer_drop_rate > 0 and random.random() < self.layer_drop_rate:
-                continue
+                continue  # layer drop
             x_enc, attention = self.enc_layers[i](x_enc, key_padding_mask=pad_mask_src)
             running_att[f"layer{i+1}_enc_self"] = attention
 
+        # 🔹 6) Final norm
         x_enc = self.encoder_norm(x_enc)
 
+        # 🔹 7) CTC head
         ctc_logits = self.ctc_head(x_enc)          # (B, T_enc, V)
         ctc_log_probs = ctc_logits.transpose(0, 1) # (T_enc, B, V)
 
         ctc_inputs = {
             "log_probs": ctc_log_probs,
-            "lengths": x_enc_lengths,              # <- use returned lengths here
+            "lengths": x_enc_lengths,              # (B,)
         }
         return x_enc, pad_mask_src, running_att, ctc_inputs
 
