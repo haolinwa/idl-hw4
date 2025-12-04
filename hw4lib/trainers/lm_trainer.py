@@ -187,8 +187,11 @@ class LMTrainer(BaseTrainer):
         best_val_loss = float('inf')
         best_val_epoch = self.current_epoch
         no_improve_epochs = 0
-        early_stop_patience = self.config["training"].get("early_stop_patience", None)
+        # Default to a modest patience so runs don't burn through all epochs by default
+        early_stop_patience = self.config["training"].get("early_stop_patience", 5)
         early_stop_delta = self.config["training"].get("early_stop_min_delta", 0.0)
+        load_best_after_train = self.config["training"].get("load_best_after_train", True)
+        stopped_early = False
 
         for epoch in range(self.current_epoch, self.current_epoch + epochs):
             # Train + validate
@@ -240,7 +243,16 @@ class LMTrainer(BaseTrainer):
                     self.load_checkpoint("checkpoint-best-metric-model.pth")
                 except Exception as e:
                     print(f"Warning: failed to reload best checkpoint: {e}")
+                stopped_early = True
                 break
+
+        # If we finished all epochs without tripping early stopping, reload the best
+        # checkpoint so downstream evaluation uses the lowest validation loss.
+        if load_best_after_train and not stopped_early and self.best_model_path.exists():
+            try:
+                self.load_checkpoint(self.best_model_path.name)
+            except Exception as e:
+                print(f"Warning: failed to reload best checkpoint after training: {e}")
 
     def evaluate(self, test_dataloader):
         test_metrics, test_attn = self._validate_epoch(test_dataloader)
