@@ -51,7 +51,7 @@ class LMTrainer(BaseTrainer):
         super().__init__(model, tokenizer, config, run_name, config_file, device)
         # TODO: Implement the __init__ method
         # TODO: Initialize the criterion
-        # How would you set the ignore_index? 
+        # How would you set the ignore_index?
         # Use value in config to set the label_smoothing argument
         pad_idx = getattr(self.tokenizer, "pad_id", None)
         if pad_idx is None:
@@ -93,6 +93,7 @@ class LMTrainer(BaseTrainer):
 
         running_ce_loss = 0.0
         total_tokens = 0
+        attn_weights = None
 
         # Only zero gradients when starting a new accumulation cycle
         self.optimizer.zero_grad()
@@ -204,6 +205,7 @@ class LMTrainer(BaseTrainer):
 
         running_ce_loss = 0.0
         total_tokens = 0
+        attn_weights = None
 
         last_attn_weights = None
 
