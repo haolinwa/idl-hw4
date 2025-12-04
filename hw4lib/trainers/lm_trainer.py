@@ -215,6 +215,20 @@ class LMTrainer(BaseTrainer):
                     targets_golden.view(B * T)
                 )
 
+            # Calculate metrics
+            batch_tokens = lengths.sum().item()
+            total_tokens += batch_tokens
+            running_ce_loss += loss.item() * batch_tokens
+
+            # Update the progress bar
+            avg_ce_loss = running_ce_loss / total_tokens
+            perplexity_token = torch.exp(torch.tensor(avg_ce_loss))
+            batch_bar.set_postfix(
+                ce_loss_token=f"{avg_ce_loss:.4f}",
+                perplexity_token=f"{perplexity_token:.4f}",
+            )
+            batch_bar.update()
+
         with torch.inference_mode():
             for i, batch in enumerate(dataloader):
                 # Unpack batch
