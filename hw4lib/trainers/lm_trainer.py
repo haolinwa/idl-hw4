@@ -48,8 +48,14 @@ class LMTrainer(BaseTrainer):
             targets_golden = targets_golden.to(self.device)
             lengths = lengths.to(self.device)
 
-            # Mixed precision forward
-            with torch.autocast(device_type=self.device, dtype=torch.float16):
+            # Mixed precision forward (GPU only). On CPU, autocast with float16
+            # can introduce numerical noise that slows or destabilizes
+            # training/perplexity, so we disable it there.
+            with torch.autocast(
+                device_type=self.device,
+                dtype=torch.float16,
+                enabled=self.device.startswith("cuda"),
+            ):
                 # Forward pass: logits and attention
                 raw_preds, attn_weights = self.model(targets_shifted, lengths)
                 last_attn_weights = attn_weights
@@ -147,7 +153,7 @@ class LMTrainer(BaseTrainer):
 
                 B, T, V = raw_preds.size()
                 loss = self.criterion(
-                    raw_preds.view(B * T, V),
+                    raw_preds.float().view(B * T, V),
                     targets_golden.view(B * T)
                 )
 
