@@ -181,12 +181,14 @@ class LMTrainer(BaseTrainer):
         """
         Full training loop for language model training.
         """
-        if self.scheduler is None:
-            raise ValueError("Scheduler is not initialized, initialize it first!")
-        if self.optimizer is None:
-            raise ValueError("Optimizer is not initialized, initialize it first!")
+        # Lazily build optimizer/scheduler if the user didn't set them explicitly
+        self._ensure_optimizer_scheduler(train_dataloader)
 
         best_val_loss = float('inf')
+        best_val_epoch = self.current_epoch
+        no_improve_epochs = 0
+        early_stop_patience = self.config["training"].get("early_stop_patience", None)
+        early_stop_delta = self.config["training"].get("early_stop_min_delta", 0.0)
 
         for epoch in range(self.current_epoch, self.current_epoch + epochs):
             # Train + validate
@@ -216,12 +218,29 @@ class LMTrainer(BaseTrainer):
             # Checkpoints
             self.save_checkpoint("checkpoint-last-epoch-model.pth")
             val_loss = val_metrics["ce_loss_char"]
-            if val_loss < best_val_loss:
+            if val_loss < (best_val_loss - early_stop_delta):
                 best_val_loss = val_loss
+                best_val_epoch = epoch
                 self.best_metric = val_loss
                 self.save_checkpoint("checkpoint-best-metric-model.pth")
+                no_improve_epochs = 0
+            else:
+                no_improve_epochs += 1
 
             self.current_epoch += 1
+
+            # Early stopping
+            if early_stop_patience is not None and no_improve_epochs >= early_stop_patience:
+                print(
+                    f"Early stopping triggered after {early_stop_patience} epochs "
+                    f"without improvement (best at epoch {best_val_epoch})."
+                )
+                # Restore best checkpoint for downstream evaluation
+                try:
+                    self.load_checkpoint("checkpoint-best-metric-model.pth")
+                except Exception as e:
+                    print(f"Warning: failed to reload best checkpoint: {e}")
+                break
 
     def evaluate(self, test_dataloader):
         test_metrics, test_attn = self._validate_epoch(test_dataloader)
