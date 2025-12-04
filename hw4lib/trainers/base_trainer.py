@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import torch.nn as nn
 from hw4lib.data.tokenizer import H4Tokenizer
-from hw4lib.utils import create_optimizer
+from hw4lib.utils import create_optimizer, create_scheduler
 from hw4lib.model import DecoderOnlyTransformer, EncoderDecoderTransformer
 import os
 import shutil
@@ -104,6 +104,28 @@ class BaseTrainer(ABC):
         self.current_epoch = 0
         self.best_metric = float('inf')
         self.training_history = []
+
+    def _ensure_optimizer_scheduler(self, train_dataloader) -> None:
+        """
+        Lazily initialize optimizer and scheduler when they are missing.
+
+        This keeps the scheduler configuration in sync with gradient accumulation
+        by always passing the configured accumulation steps when constructing the
+        scheduler.
+        """
+
+        grad_accum_steps = self.config['training'].get('gradient_accumulation_steps', 1)
+
+        if self.optimizer is None:
+            self.optimizer = create_optimizer(self.model, self.config['optimizer'])
+
+        if self.scheduler is None:
+            self.scheduler = create_scheduler(
+                self.optimizer,
+                self.config['scheduler'],
+                train_dataloader,
+                gradient_accumulation_steps=grad_accum_steps,
+            )
     
     @abstractmethod
     def _train_epoch(self, dataloader) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:

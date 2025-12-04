@@ -181,10 +181,8 @@ class LMTrainer(BaseTrainer):
         """
         Full training loop for language model training.
         """
-        if self.scheduler is None:
-            raise ValueError("Scheduler is not initialized, initialize it first!")
-        if self.optimizer is None:
-            raise ValueError("Optimizer is not initialized, initialize it first!")
+        # Lazily build optimizer/scheduler if the user didn't set them explicitly
+        self._ensure_optimizer_scheduler(train_dataloader)
 
         best_val_loss = float('inf')
 
