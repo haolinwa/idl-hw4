@@ -264,14 +264,19 @@ class SequenceGenerator:
                         continue
 
                     seq_len = seq.size(0)
-                    batch_for_model = example.new_full((batch_size, seq_len), pad_id)
+                    # Preserve the full context of all batch elements instead of
+                    # truncating them to the current beam length. Truncation can
+                    # remove useful conditioning tokens and lead to inconsistent
+                    # scores when score_fn expects the original batch structure.
+                    model_len = max(seq_len, base_batch.size(1))
+                    batch_for_model = example.new_full((batch_size, model_len), pad_id)
 
                     for b_idx in range(batch_size):
                         base_seq = base_batch[b_idx]
-                        trim_len = min(seq_len, base_seq.size(0))
-                        batch_for_model[b_idx, :trim_len] = base_seq[:trim_len]
+                        copy_len = min(model_len, base_seq.size(0))
+                        batch_for_model[b_idx, :copy_len] = base_seq[:copy_len]
 
-                    batch_for_model[batch_idx] = seq
+                    batch_for_model[batch_idx, :seq_len] = seq
 
                     logits_all = self.score_fn(batch_for_model)
                     logits = logits_all[batch_idx:batch_idx + 1]
