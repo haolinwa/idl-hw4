@@ -5,11 +5,11 @@ from .decoder_layers import SelfAttentionDecoderLayer, CrossAttentionDecoderLaye
 from .encoder_layers import SelfAttentionEncoderLayer
 from .transformers import DecoderOnlyTransformer, EncoderDecoderTransformer
 
-__all__ = ['PadMask', 
-           'CausalMask', 
-           'PositionalEncoding', 
-           'SelfAttentionLayer', 
-           'CrossAttentionLayer', 
+__all__ = ['PadMask',
+           'CausalMask',
+           'PositionalEncoding',
+           'SelfAttentionLayer',
+           'CrossAttentionLayer',
            'FeedForwardLayer',
            'SelfAttentionDecoderLayer',
            'CrossAttentionDecoderLayer',
