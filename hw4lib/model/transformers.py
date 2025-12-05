@@ -7,6 +7,7 @@ from .positional_encoding import PositionalEncoding
 from .decoder_layers import SelfAttentionDecoderLayer, CrossAttentionDecoderLayer
 from .encoder_layers import SelfAttentionEncoderLayer
 from .speech_embedding import SpeechEmbedding
+import torch.nn.functional as F
 import warnings
 from torchinfo import summary
 
@@ -221,3 +222,183 @@ class DecoderOnlyTransformer(nn.Module):
         # Return the last token's logits for next token prediction
         logits = seq_out[:, -1, :]
         return logits
+
+
+## -------------------------------------------------------------------------------------------------
+## Encoder-Decoder Transformer
+## -------------------------------------------------------------------------------------------------
+class EncoderDecoderTransformer(nn.Module):
+    """Pre-LN Encoder-Decoder Transformer with optional CTC head."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        time_reduction: int,
+        reduction_method: str,
+        num_encoder_layers: int,
+        num_encoder_heads: int,
+        d_ff_encoder: int,
+        num_decoder_layers: int,
+        num_decoder_heads: int,
+        d_ff_decoder: int,
+        d_model: int,
+        dropout: float,
+        max_len: int,
+        num_classes: int,
+        weight_tying: bool = False,
+        layer_drop_rate: float = 0.0,
+    ):
+        super().__init__()
+
+        self.num_encoder_layers = num_encoder_layers
+        self.num_decoder_layers = num_decoder_layers
+        self.num_classes = num_classes
+        self.layer_drop_rate = layer_drop_rate
+
+        # Embeddings
+        self.source_embedding = SpeechEmbedding(
+            input_dim=input_dim,
+            output_dim=d_model,
+            dropout=dropout,
+            time_reduction=time_reduction,
+            reduction_method=reduction_method,
+        )
+        self.target_embedding = nn.Embedding(num_classes, d_model)
+        self.positional_encoding = PositionalEncoding(d_model, max_len)
+        self.dropout = nn.Dropout(dropout)
+
+        # Encoder/Decoder stacks
+        self.enc_layers = nn.ModuleList(
+            [
+                SelfAttentionEncoderLayer(
+                    d_model=d_model,
+                    num_heads=num_encoder_heads,
+                    d_ff=d_ff_encoder,
+                    dropout=dropout,
+                )
+                for _ in range(num_encoder_layers)
+            ]
+        )
+
+        self.dec_layers = nn.ModuleList(
+            [
+                CrossAttentionDecoderLayer(
+                    d_model=d_model,
+                    num_heads=num_decoder_heads,
+                    d_ff=d_ff_decoder,
+                    dropout=dropout,
+                )
+                for _ in range(num_decoder_layers)
+            ]
+        )
+
+        self.encoder_norm = nn.LayerNorm(d_model)
+        self.decoder_norm = nn.LayerNorm(d_model)
+
+        self.final_linear = nn.Linear(d_model, num_classes)
+        self.ctc_head = nn.Linear(d_model, num_classes)
+
+        if weight_tying:
+            self.target_embedding.weight = self.final_linear.weight
+
+    def encode(self, source: torch.Tensor, source_lengths: torch.Tensor):
+        enc_out, enc_lengths = self.source_embedding(source, source_lengths)
+        enc_out = self.positional_encoding(enc_out)
+        enc_out = self.dropout(enc_out)
+
+        attn_weights = {}
+        pad_mask_src = PadMask(enc_out, enc_lengths)
+
+        for i, layer in enumerate(self.enc_layers):
+            if (
+                self.training
+                and self.layer_drop_rate > 0
+                and random.random() < self.layer_drop_rate
+            ):
+                continue
+            enc_out, enc_attn = layer(enc_out, key_padding_mask=pad_mask_src)
+            attn_weights[f"layer{i+1}_enc_self"] = enc_attn
+
+        enc_out = self.encoder_norm(enc_out)
+
+        ctc_logits = self.ctc_head(enc_out)
+        ctc_log_probs = F.log_softmax(ctc_logits, dim=-1).transpose(0, 1)
+        ctc_input = {"log_probs": ctc_log_probs, "lengths": enc_lengths}
+
+        return enc_out, pad_mask_src, attn_weights, ctc_input
+
+    def decode(
+        self,
+        targets: torch.Tensor,
+        encoder_output: torch.Tensor,
+        target_lengths: Optional[torch.Tensor],
+        pad_mask_src: torch.Tensor,
+    ):
+        x = self.target_embedding(targets)
+        x = self.positional_encoding(x)
+        x = self.dropout(x)
+
+        attn_weights = {}
+        pad_mask_dec = PadMask(x, target_lengths) if target_lengths is not None else None
+        causal_mask = CausalMask(targets)
+
+        for i, layer in enumerate(self.dec_layers):
+            if (
+                self.training
+                and self.layer_drop_rate > 0
+                and random.random() < self.layer_drop_rate
+            ):
+                continue
+            x, self_attn, cross_attn = layer(
+                x,
+                encoder_output,
+                dec_key_padding_mask=pad_mask_dec,
+                enc_key_padding_mask=pad_mask_src,
+                attn_mask=causal_mask,
+            )
+            attn_weights[f"layer{i+1}_dec_self"] = self_attn
+            attn_weights[f"layer{i+1}_dec_cross"] = cross_attn
+
+        x = self.decoder_norm(x)
+        logits = self.final_linear(x)
+
+        return logits, attn_weights
+
+    def forward(
+        self,
+        source: torch.Tensor,
+        targets: torch.Tensor,
+        source_lengths: torch.Tensor,
+        target_lengths: torch.Tensor,
+    ) -> Tuple[torch.Tensor, dict, dict]:
+        enc_out, pad_mask_src, enc_attn, ctc_input = self.encode(source, source_lengths)
+        logits, dec_attn = self.decode(targets, enc_out, target_lengths, pad_mask_src)
+
+        attn_weights = {**enc_attn, **dec_attn}
+        return logits, attn_weights, ctc_input
+
+    def score(
+        self,
+        prompts: torch.Tensor,
+        encoder_output: torch.Tensor,
+        pad_mask_src: torch.Tensor,
+    ) -> torch.Tensor:
+        """Score the next token logits given encoder outputs.
+
+        This is used during recognition where decoder inputs are not padded.
+        Args:
+            prompts: Tensor of token ids shaped (batch, seq_len)
+            encoder_output: Encoded speech features (batch, src_len, d_model)
+            pad_mask_src: Padding mask for encoder outputs
+        Returns:
+            logits for the next token prediction shaped (batch, num_classes)
+        """
+        if self.training:
+            raise ValueError(
+                "score method is not supported during training, use forward instead"
+            )
+
+        logits, _ = self.decode(
+            prompts, encoder_output, target_lengths=None, pad_mask_src=pad_mask_src
+        )
+        return logits[:, -1, :]
