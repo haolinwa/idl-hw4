@@ -181,6 +181,8 @@ class BaseTrainer(ABC):
                     "instead; consider using DecoderOnlyTransformer or "
                     "EncoderDecoderTransformer for full summaries."
                 )
+                # summary generation with the provided inputs, at least save the string
+                # representation of the model so the architecture is recorded.
                 f.write(str(self.model))
 
         # Create subdirectories
