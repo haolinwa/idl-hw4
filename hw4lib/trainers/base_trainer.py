@@ -171,7 +171,10 @@ class BaseTrainer(ABC):
                 # Write the summary string to file
                 f.write(str(model_summary))
             else:
-                raise NotImplementedError("Model architecture summary not implemented")
+                # Fallback: if the model type is unknown or doesn't support torchinfo
+                # summary generation with the provided inputs, at least save the string
+                # representation of the model so the architecture is recorded.
+                f.write(str(self.model))
 
         # Create subdirectories
         checkpoint_dir = expt_root / 'checkpoints'
