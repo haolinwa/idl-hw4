@@ -62,9 +62,7 @@ class H4Tokenizer:
 
     VALID_TYPES = ['char', '1k', '5k', '10k']
 
-    def __init__(self, token_map: Dict[str, str],
-                 token_type: Literal['char', '1k', '5k', '10k'] = 'char',
-                 validate: bool = True):
+    def __init__(self, token_map: Dict[str, str], token_type: Literal['char', '1k', '5k', '10k']='char', validate: bool=True):
         """
         Initialize tokenizer from pre-trained file.
 
@@ -103,36 +101,6 @@ class H4Tokenizer:
         if validate:    
             self._validate_tokenizer()
 
-    # ------------------------------------------------------------------
-    # Properties to match the interface used by ASRDataset and others
-    # ------------------------------------------------------------------
-    @property
-    def pad_token_id(self) -> int:
-        return self.pad_id
-
-    @property
-    def unk_token_id(self) -> int:
-        return self.unk_id
-
-    @property
-    def mask_token_id(self) -> int:
-        return self.mask_id
-
-    @property
-    def sos_token_id(self) -> int:
-        return self.sos_id
-
-    @property
-    def eos_token_id(self) -> int:
-        return self.eos_id
-
-    @property
-    def blank_token_id(self) -> int:
-        return self.blank_id
-
-    # ------------------------------------------------------------------
-    # Core methods
-    # ------------------------------------------------------------------
     def tokenize(self, text: str) -> List[str]:
         """
         Split text into tokens.
@@ -157,7 +125,7 @@ class H4Tokenizer:
         """
         return self.tokenizer.encode(text).ids
 
-    def decode(self, token_ids: List[int], skip_special_tokens: bool = False) -> str:
+    def decode(self, token_ids: List[int], skip_special_tokens: bool=False) -> str:
         """
         Convert token IDs back to text.
 
@@ -212,13 +180,9 @@ class H4Tokenizer:
         """
         decoded_text = self.decode(token_ids, skip_special_tokens=skip_special_tokens)
         if skip_special_tokens:
-            token_count = sum(
-                1 for id in token_ids
-                if id not in [
-                    self.pad_id, self.unk_id, self.mask_id,
-                    self.sos_id, self.eos_id, self.blank_id
-                ]
-            )
+            token_count = sum(1 for id in token_ids if id not in 
+                             [self.pad_id, self.unk_id, self.mask_id, 
+                              self.sos_id, self.eos_id, self.blank_id])
         else:
             token_count = len(token_ids)
         
