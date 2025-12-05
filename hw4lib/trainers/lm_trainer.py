@@ -16,7 +16,8 @@ class LMTrainer(BaseTrainer):
         # Initialize the criterion
         self.criterion = nn.CrossEntropyLoss(
             ignore_index=self.tokenizer.pad_id,
-            label_smoothing=self.config['loss'].get('label_smoothing', 0.0)
+            label_smoothing=self.config['loss'].get('label_smoothing', 0.0),
+            reduction="none",
         )
 
     def _train_epoch(self, dataloader) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
@@ -64,18 +65,19 @@ class LMTrainer(BaseTrainer):
             # CrossEntropy with large vocabularies (which can silently inflate
             # perplexity when gradients underflow).
             B, T, V = raw_preds.size()
-            raw_loss = self.criterion(
-                raw_preds.float().view(B * T, V),
-                targets_golden.view(B * T)
-            )
+            logits = raw_preds.float().reshape(B * T, V)
+            targets = targets_golden.reshape(B * T)
+            token_mask = targets.ne(self.tokenizer.pad_id)
+            raw_loss = self.criterion(logits, targets)
+            loss_sum = (raw_loss * token_mask).sum()
 
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
-            batch_tokens = lengths.sum().item()
+            batch_tokens = token_mask.sum().item()
             total_tokens += batch_tokens
-            running_ce_loss += raw_loss.item() * batch_tokens
+            running_ce_loss += loss_sum.item()
 
             # Normalize loss for gradient accumulation
-            loss = raw_loss / grad_accum_steps
+            loss = (loss_sum / batch_tokens) / grad_accum_steps
 
             # Backpropagate the loss
             self.scaler.scale(loss).backward()
@@ -152,14 +154,15 @@ class LMTrainer(BaseTrainer):
                 last_attn_weights = attn_weights
 
                 B, T, V = raw_preds.size()
-                loss = self.criterion(
-                    raw_preds.float().view(B * T, V),
-                    targets_golden.view(B * T)
-                )
+                logits = raw_preds.float().reshape(B * T, V)
+                targets = targets_golden.reshape(B * T)
+                token_mask = targets.ne(self.tokenizer.pad_id)
+                raw_loss = self.criterion(logits, targets)
+                loss = (raw_loss * token_mask).sum()
 
-                batch_tokens = lengths.sum().item()
+                batch_tokens = token_mask.sum().item()
                 total_tokens += batch_tokens
-                running_ce_loss += loss.item() * batch_tokens
+                running_ce_loss += loss.item()
 
                 avg_ce_loss = running_ce_loss / total_tokens
                 perplexity_token = torch.exp(torch.tensor(avg_ce_loss))
