@@ -51,18 +51,25 @@ class LMTrainer(BaseTrainer):
         super().__init__(model, tokenizer, config, run_name, config_file, device)
         # TODO: Implement the __init__ method
         # TODO: Initialize the criterion
-        # How would you set the ignore_index?
+        # How would you set the ignore_index? 
         # Use value in config to set the label_smoothing argument
-        self.criterion = nn.CrossEntropyLoss(
-            ignore_index=self.tokenizer.pad_id,
-            label_smoothing=self.config['training'].get('label_smoothing', 0.0)
+        pad_idx = getattr(self.tokenizer, "pad_id", None)
+        if pad_idx is None:
+            pad_idx = (
+                self.config.get("data", {}).get("pad_id", -100)
+            )
+
+        # Get label smoothing from config (default 0.0 if not present)
+        label_smoothing = (
+            self.config
+            .get("training", {})
+            .get("label_smoothing", 0.0)
         )
 
-        # Ensure the language model knows the padding token so inference masks
-        # out padded positions (important for beam search padding).
-        if hasattr(self.model, 'pad_token_id'):
-            self.model.pad_token_id = self.tokenizer.pad_id
-        # self.scaler = torch.cuda.amp.GradScaler(self.device)
+        self.criterion = nn.CrossEntropyLoss(
+            ignore_index=pad_idx,
+            label_smoothing=label_smoothing
+        )
 
     def _train_epoch(self, dataloader) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """
@@ -75,55 +82,61 @@ class LMTrainer(BaseTrainer):
         """
 
         # TODO: In-fill the _train_epoch method
-        
-        # Initialize training variables
         self.model.train()
-        batch_bar = tqdm(total=len(dataloader), dynamic_ncols=True, leave=False, position=0, desc=f"[Training LM]")
+        batch_bar = tqdm(
+            total=len(dataloader),
+            dynamic_ncols=True,
+            leave=False,
+            position=0,
+            desc=f"[Training LM]"
+        )
+
         running_ce_loss = 0.0
         total_tokens = 0
 
         # Only zero gradients when starting a new accumulation cycle
         self.optimizer.zero_grad()
-        attn_weights = {} 
+
+        last_attn_weights = None
+
+        grad_accum_steps = self.config["training"]["gradient_accumulation_steps"]
+
         for i, batch in enumerate(dataloader):
-            # TODO: Unpack batch from the dataloader
-            # TODO: Move the batch elements to self.device
+            # Unpack batch from the dataloader
             targets_shifted, targets_golden, lengths = batch
-            targets_shifted = targets_shifted.to(self.device) 
-            targets_golden = targets_golden.to(self.device) 
-            lengths = lengths.to(self.device) 
-        
 
-            with torch.autocast(device_type=self.device, dtype=torch.float16):
+            # Move batch elements to device
+            targets_shifted = targets_shifted.to(self.device)
+            targets_golden = targets_golden.to(self.device)
+            lengths = lengths.to(self.device)
 
-                # TODO: Get raw logits and attention weights from model
-                raw_preds, batch_attn_weights = self.model(targets_shifted, lengths)
+            # Mixed precision forward
+            with torch.autocast(device_type=str(self.device), dtype=torch.float16):
+                # Get raw logits and attention weights from model
+                # Expected shape: raw_preds: [B, T, vocab_size]
+                raw_preds, attn_weights = self.model(targets_shifted, lengths)
+                last_attn_weights = attn_weights
 
-                # TODO: Calculate raw loss first
-                # What is the shape of raw_preds and targets_golden? 
-                # Would you need to change the shape of the inputs to the criterion?
-                # Hint: See the documentation for CrossEntropyLoss
+                # CrossEntropyLoss expects shape [N, C] and targets [N]
+                B, T, V = raw_preds.shape
                 raw_loss = self.criterion(
-                    raw_preds.reshape(-1, raw_preds.size(-1)), 
-                    targets_golden.reshape(-1)
+                    raw_preds.view(B * T, V),
+                    targets_golden.view(B * T)
                 )
 
-                if not attn_weights:
-                    attn_weights = batch_attn_weights 
-                
-            # Calculate metrics with raw loss (DO NOT MODIFY THIS)
+            # Calculate metrics with raw loss
             batch_tokens = lengths.sum().item()
             total_tokens += batch_tokens
             running_ce_loss += raw_loss.item() * batch_tokens
 
             # Normalize loss for gradient accumulation
-            loss = raw_loss / self.config['training']['gradient_accumulation_steps']
-            
-            # TODO: Backpropagate the loss
+            loss = raw_loss / grad_accum_steps
+
+            # Backpropagate with GradScaler
             self.scaler.scale(loss).backward()
-        
+
             # Only update weights after accumulating enough gradients
-            if (i + 1) % self.config['training']['gradient_accumulation_steps'] == 0:
+            if (i + 1) % grad_accum_steps == 0:
                 self.scaler.step(self.optimizer)
                 # Only step scheduler here if it's not ReduceLROnPlateau
                 if not isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -131,13 +144,13 @@ class LMTrainer(BaseTrainer):
                 self.scaler.update()
                 self.optimizer.zero_grad()  # Reset gradients after update
 
-            # Calculate metrics
+            # Compute online metrics for the progress bar
             avg_ce_loss = running_ce_loss / total_tokens
             perplexity_token = torch.exp(torch.tensor(avg_ce_loss))
             batch_bar.set_postfix(
                 ce_loss_token=f"{avg_ce_loss:.4f}",
                 perplexity_token=f"{perplexity_token:.4f}",
-                acc_step=f"{(i % self.config['training']['gradient_accumulation_steps']) + 1}/{self.config['training']['gradient_accumulation_steps']}"
+                acc_step=f"{(i % grad_accum_steps) + 1}/{grad_accum_steps}"
             )
             batch_bar.update()
 
@@ -146,9 +159,8 @@ class LMTrainer(BaseTrainer):
             torch.cuda.empty_cache()
 
         # Handle any remaining gradients at the end of the epoch
-        if (len(dataloader) % self.config['training']['gradient_accumulation_steps']) != 0:
+        if (len(dataloader) % grad_accum_steps) != 0:
             self.scaler.step(self.optimizer)
-            # Only step scheduler here if it's not ReduceLROnPlateau
             if not isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 self.scheduler.step()
             self.scaler.update()
@@ -162,11 +174,11 @@ class LMTrainer(BaseTrainer):
         batch_bar.close()
 
         return {
-            'ce_loss_token': avg_ce_loss,
-            'ce_loss_char': avg_ce_loss_char,
-            'perplexity_token': avg_perplexity_token.item(),
-            'perplexity_char': avg_perplexity_char.item()
-        }, attn_weights
+            "ce_loss_token": avg_ce_loss,
+            "ce_loss_char": avg_ce_loss_char,
+            "perplexity_token": avg_perplexity_token.item(),
+            "perplexity_char": avg_perplexity_char.item(),
+        }, last_attn_weights
             
             
     def _validate_epoch(self, dataloader):
@@ -180,56 +192,57 @@ class LMTrainer(BaseTrainer):
         """
 
         # TODO: In-fill the _validate_epoch method
-        
-        # Initialize validation variables
+
         self.model.eval()
-        batch_bar = tqdm(total=len(dataloader), dynamic_ncols=True, leave=False, position=0, desc=f"[Validating LM]")
+        batch_bar = tqdm(
+            total=len(dataloader),
+            dynamic_ncols=True,
+            leave=False,
+            position=0,
+            desc=f"[Validating LM]"
+        )
+
         running_ce_loss = 0.0
         total_tokens = 0
 
-        attn_weights = {}
-        for i, batch in enumerate(dataloader):
-            # TODO: Unpack batch
-            # TODO: Move the batch elements to self.device
-            targets_shifted, targets_golden, lengths = batch
-            targets_shifted = targets_shifted.to(self.device)
-            targets_golden = targets_golden.to(self.device)
-            lengths = lengths.to(self.device)
+        last_attn_weights = None
 
-            # Forward pass
-            with torch.inference_mode():
-                # TODO: Get raw predictions and attention weights from model
-                raw_preds, batch_attn_weights = self.model(targets_shifted, lengths)
+        with torch.inference_mode():
+            for i, batch in enumerate(dataloader):
+                # Unpack batch
+                targets_shifted, targets_golden, lengths = batch
 
-                # TODO: Calculate loss
-                # What is the shape of raw_preds and targets_golden? 
-                # Would you need to change the shape of the inputs to the criterion?
-                # Hint: See the documentation for CrossEntropyLoss
+                # Move to device
+                targets_shifted = targets_shifted.to(self.device)
+                targets_golden = targets_golden.to(self.device)
+                lengths = lengths.to(self.device)
+
+                # Forward pass
+                raw_preds, attn_weights = self.model(targets_shifted, lengths)
+                last_attn_weights = attn_weights
+
+                B, T, V = raw_preds.shape
                 loss = self.criterion(
-                    raw_preds.reshape(-1, raw_preds.size(-1)),
-                    targets_golden.reshape(-1)
+                    raw_preds.view(B * T, V),
+                    targets_golden.view(B * T)
                 )
 
-                if not attn_weights:
-                    attn_weights = batch_attn_weights
+                # Calculate metrics
+                batch_tokens = lengths.sum().item()
+                total_tokens += batch_tokens
+                running_ce_loss += loss.item() * batch_tokens
 
-            # Calculate metrics
-            batch_tokens = lengths.sum().item()
-            total_tokens += batch_tokens
-            running_ce_loss += loss.item() * batch_tokens
+                avg_ce_loss = running_ce_loss / total_tokens
+                perplexity_token = torch.exp(torch.tensor(avg_ce_loss))
+                batch_bar.set_postfix(
+                    ce_loss_token=f"{avg_ce_loss:.4f}",
+                    perplexity_token=f"{perplexity_token:.4f}",
+                )
+                batch_bar.update()
 
-            # Update the progress bar
-            avg_ce_loss = running_ce_loss / total_tokens
-            perplexity_token = torch.exp(torch.tensor(avg_ce_loss))
-            batch_bar.set_postfix(
-                ce_loss_token=f"{avg_ce_loss:.4f}",
-                perplexity_token=f"{perplexity_token:.4f}",
-            )
-            batch_bar.update()
-
-            # Clean up
-            del targets_shifted, targets_golden, lengths, raw_preds, loss
-            torch.cuda.empty_cache()
+                # Clean up
+                del targets_shifted, targets_golden, lengths, raw_preds, loss
+                torch.cuda.empty_cache()
 
         # Compute final metrics
         avg_ce_loss = running_ce_loss / total_tokens
@@ -239,12 +252,11 @@ class LMTrainer(BaseTrainer):
         batch_bar.close()
 
         return {
-            'ce_loss_token': avg_ce_loss,
-            'ce_loss_char': avg_ce_loss_char,
-            'perplexity_token': avg_perplexity_token.item(),
-            'perplexity_char': avg_perplexity_char.item()
-        }, attn_weights
-        
+            "ce_loss_token": avg_ce_loss,
+            "ce_loss_char": avg_ce_loss_char,
+            "perplexity_token": avg_perplexity_token.item(),
+            "perplexity_char": avg_perplexity_char.item(),
+        }, last_attn_weights
 
     def train(self, train_dataloader, val_dataloader, epochs: int):
         """
@@ -257,55 +269,53 @@ class LMTrainer(BaseTrainer):
         """
         if self.scheduler is None:
             raise ValueError("Scheduler is not initialized, initialize it first!")
-        
         if self.optimizer is None:
             raise ValueError("Optimizer is not initialized, initialize it first!")
-        
-        # TODO: In-fill the train method
 
-        # Training loop
-        best_val_loss = float('inf')
+        best_val_loss = float("inf")
 
         for epoch in range(self.current_epoch, self.current_epoch + epochs):
-            
-            # TODO: Train for one epoch
+            # Train for one epoch
             train_metrics, train_attn = self._train_epoch(train_dataloader)
-            
-            # TODO: Validate
+
+            # Validate
             val_metrics, val_attn = self._validate_epoch(val_dataloader)
 
-            # TODO: Generate with the validation set
-            gen_results = self.generate(val_dataloader)
-            
+            # Generate with the validation set (greedy by default)
+            gen_results = self.generate(
+                val_dataloader,
+                generation_config=self._get_evaluation_generation_configs()["greedy"]
+            )
+
             # Step ReduceLROnPlateau scheduler with validation loss
             if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                self.scheduler.step(val_metrics['ce_loss_char'])
+                self.scheduler.step(val_metrics["ce_loss_char"])
 
             # Log metrics
             metrics = {
-                'train': train_metrics,
-                'val': val_metrics
+                "train": train_metrics,
+                "val": val_metrics,
             }
             self._log_metrics(metrics, epoch)
-            
-            # Save attention plots
+
+            # Save attention plots (use the first attention key)
             train_attn_keys = list(train_attn.keys())
             val_attn_keys = list(val_attn.keys())
             self._save_attention_plot(train_attn[train_attn_keys[0]][0], epoch, "train_self")
             self._save_attention_plot(val_attn[val_attn_keys[0]][0], epoch, "val_self")
 
             # Save generated text
-            self._save_generated_text(gen_results, f'val_epoch_{epoch}')
+            self._save_generated_text(gen_results, f"val_epoch_{epoch}")
 
-            # Save checkpoints
-            self.save_checkpoint('checkpoint-last-epoch-model.pth')
-            
+            # Save last-epoch checkpoint
+            self.save_checkpoint("checkpoint-last-epoch-model.pth")
+
             # Check if this is the best model
-            val_loss = val_metrics['ce_loss_char']
+            val_loss = val_metrics["ce_loss_char"]
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 self.best_metric = val_loss
-                self.save_checkpoint('checkpoint-best-metric-model.pth')
+                self.save_checkpoint("checkpoint-best-metric-model.pth")
 
             self.current_epoch += 1
 
@@ -369,20 +379,17 @@ class LMTrainer(BaseTrainer):
         # TODO: In-fill the generate method
         # You just need to implement the greedy search generation
         # See the TODO below
-        
-
         if generation_config is None:
-            # Greedy search (default)
             generation_config = {
-                'num_samples': 10,
-                'prompt_length': 20,
-                'seed': 11785,
-                'max_length': self.model.max_len,
-                'temperature': 1.0,
-                'beam_width': 5,
-                'repeat_penalty': 1.0,
-                'top_k': 0,
-                'top_p': 0.0    
+                "num_samples": 10,
+                "prompt_length": 20,
+                "seed": 11785,
+                "max_length": self.model.max_len,
+                "temperature": 1.0,
+                "beam_width": 1,
+                "repeat_penalty": 1.0,
+                "top_k": 0,
+                "top_p": 0.0,
             }
 
         # Create sequence generator
@@ -390,65 +397,63 @@ class LMTrainer(BaseTrainer):
             score_fn=lambda x: self.model.score(x),
             tokenizer=self.tokenizer,
             max_length=self.model.max_len,
-            device=self.device
+            device=self.device,
         )
 
-        # Sample prompts and get original sequences
+        # Sample prompts and originals from dataset
         prompts, originals = dataloader.dataset.sample_prompts(
-            num_samples=generation_config.get('num_samples', 10),
-            prompt_length=generation_config.get('prompt_length', 10),
-            seed=generation_config.get('seed', 11785)
+            num_samples=generation_config.get("num_samples", 10),
+            prompt_length=generation_config.get("prompt_length", 10),
+            seed=generation_config.get("seed", 11785),
         )
         prompts = prompts.to(self.device)
 
-        # Generate sequences based on method
         self.model.eval()
         with torch.inference_mode():
-            if generation_config.get('top_k', 0) > 0 or generation_config.get('top_p', 0) > 0:
+            if generation_config.get("top_k", 0) > 0 or generation_config.get("top_p", 0) > 0:
                 print("Generating with sampling...")
-                seqs, scores = None, None 
-                raise NotImplementedError # Remove if you implemented the sampling method
-            elif generation_config.get('beam_width', 1) > 1:
+                # Not required for HW – leave unimplemented
+                seqs, scores = NotImplementedError, NotImplementedError
+                raise NotImplementedError("Sampling generation is not implemented.")
+            elif generation_config.get("beam_width", 1) > 1:
                 print("Generating with beam search...")
-                seqs, scores = generator.generate_beam(
-                    prompts, 
-                    beam_width=generation_config.get('beam_width', 5),
-                    temperature=generation_config.get('temperature', 1.0),
-                    repeat_penalty=generation_config.get('repeat_penalty', 1.0)
-                )
-                # raise NotImplementedError # Remove if you implemented the beam search method
-                # Take best beam and score
-                seqs = seqs[:, 0]
-                scores = scores[:, 0]
+                # Not required for HW – leave unimplemented
+                seqs, scores = NotImplementedError, NotImplementedError
+                raise NotImplementedError("Beam search generation is not implemented.")
             else:
-                # TODO: Use the prompts and the generate_greedy method you implemented in the SequenceGenerator class to generate sequences
+                # Greedy search
                 print("Generating with greedy search...")
                 seqs, scores = generator.generate_greedy(
                     prompts,
-                    temperature=generation_config.get('temperature', 1.0),
-                    repeat_penalty=generation_config.get('repeat_penalty', 1.0)
+                    max_length=generation_config.get("max_length", self.model.max_len)
                 )
 
-        # Post-process sequences (trim upto EOS token)
+        # Post-process sequences (trim at EOS etc.)
         processed_seqs = generator.post_process_sequence(seqs, self.tokenizer)
 
-        # Compile results
-        # results is a dictionary with the following keys:
-        # - prompt: the decoded prompt
-        # - generated: the decoded generated sequence after the prompt
-        # - original: the decoded original sequence after the prompt
-        # - score: the score of the generated sequence
-        # NOTE: You might find the H4Tokenizer class useful here
+        # Build results list
         results = []
-        for _, (prompt, seq, score, original) in enumerate(zip(prompts, processed_seqs, scores, originals)):
-            results.append({
-                'prompt': self.tokenizer.decode(prompt.tolist()),
-                'original': self.tokenizer.decode(original[len(prompt):].tolist()),
-                'generated': self.tokenizer.decode(seq[len(prompt):].tolist()),
-                'score': score.item()
-            })
+        for prompt, seq, score, original in zip(prompts, processed_seqs, scores, originals):
+            prompt_ids = prompt.tolist()
+            seq_ids = seq.tolist()
+            orig_ids = original.tolist()
+
+            # Decode everything; remove the prompt part when reporting generated/original tails
+            prompt_text = self.tokenizer.decode(prompt_ids)
+            original_tail = self.tokenizer.decode(orig_ids[len(prompt_ids):])
+            generated_tail = self.tokenizer.decode(seq_ids[len(prompt_ids):])
+
+            results.append(
+                {
+                    "prompt": prompt_text,
+                    "original": original_tail,
+                    "generated": generated_tail,
+                    "score": score.item(),
+                }
+            )
 
         return results
+
 
     def _get_evaluation_generation_configs(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -496,4 +501,3 @@ class LMTrainer(BaseTrainer):
             'beam': beam_config,
             'sample': sample_config
         }
-

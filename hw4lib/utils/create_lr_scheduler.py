@@ -5,21 +5,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import copy
 
-def _epochs_to_steps(
-    epochs: int,
-    train_loader: torch.utils.data.DataLoader,
-    gradient_accumulation_steps: int = 1,
-) -> int:
-    """Convert epochs to optimizer steps based on the train loader length.
-
-    When gradient accumulation is enabled, the optimizer (and scheduler) only
-    step every ``gradient_accumulation_steps`` batches. Using the raw number of
-    dataloader batches would therefore overestimate the total number of
-    scheduler steps, causing the LR schedule to progress ``gradient_accumulation_steps``
-    times faster than the actual optimizer updates.
-    """
-    steps_per_epoch = max(1, (len(train_loader) + gradient_accumulation_steps - 1) // gradient_accumulation_steps)
-    return epochs * steps_per_epoch
+def _epochs_to_steps(epochs: int, train_loader: torch.utils.data.DataLoader, gradient_accumulation_steps: int = 1) -> int:
+    """Convert epochs to total steps based on the train loader length."""
+    return epochs * len(train_loader)
 
 def create_scheduler(
     optimizer: torch.optim.Optimizer,
@@ -32,7 +20,7 @@ def create_scheduler(
     All schedulers except ReduceLROnPlateau are configured to be step-based.
     """
     scheduler_name = scheduler_config['name'].lower()
-    steps_per_epoch = max(1, (len(train_loader) + gradient_accumulation_steps - 1) // gradient_accumulation_steps)
+    steps_per_epoch = len(train_loader) // gradient_accumulation_steps
 
     print("\n📈 Configuring Learning Rate Scheduler:")
     print(f"├── Type: {scheduler_name.upper()}")
@@ -126,8 +114,7 @@ def create_scheduler(
             optimizer,
             base_scheduler,
             warmup_config,
-            train_loader,
-            gradient_accumulation_steps,
+            train_loader
         )
     else:
         print("└── Warmup: Disabled")
@@ -140,8 +127,7 @@ def create_warmup_scheduler(
     optimizer: torch.optim.Optimizer,
     base_scheduler: torch.optim.lr_scheduler._LRScheduler,
     warmup_config: Dict[str, Any],
-    train_loader: torch.utils.data.DataLoader,
-    gradient_accumulation_steps: int = 1,
+    train_loader: torch.utils.data.DataLoader
 ) -> torch.optim.lr_scheduler.SequentialLR:
     """
     Create a warmup scheduler wrapped around the base scheduler.
@@ -151,7 +137,7 @@ def create_warmup_scheduler(
     end_factor = warmup_config.get('end_factor', 1.0)
 
     # Calculate the number of warmup steps
-    warmup_steps = _epochs_to_steps(warmup_epochs, train_loader, gradient_accumulation_steps)
+    warmup_steps = len(train_loader) * warmup_epochs
 
     # Create warmup scheduler
     warmup_scheduler = lr_scheduler.LinearLR(
