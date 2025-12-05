@@ -48,18 +48,26 @@ class LMTrainer(BaseTrainer):
             targets_golden = targets_golden.to(self.device)
             lengths = lengths.to(self.device)
 
-            # Mixed precision forward
-            with torch.autocast(device_type=self.device, dtype=torch.float16):
+            # Mixed precision forward (GPU only). On CPU, autocast with float16
+            # can introduce numerical noise that slows or destabilizes
+            # training/perplexity, so we disable it there.
+            with torch.autocast(
+                device_type=self.device,
+                dtype=torch.float16,
+                enabled=self.device.startswith("cuda"),
+            ):
                 # Forward pass: logits and attention
                 raw_preds, attn_weights = self.model(targets_shifted, lengths)
                 last_attn_weights = attn_weights
 
-                # CrossEntropyLoss expects [N, C] and [N]
-                B, T, V = raw_preds.size()
-                raw_loss = self.criterion(
-                    raw_preds.view(B * T, V),
-                    targets_golden.view(B * T)
-                )
+            # Compute the loss in full precision to avoid FP16 instability on
+            # CrossEntropy with large vocabularies (which can silently inflate
+            # perplexity when gradients underflow).
+            B, T, V = raw_preds.size()
+            raw_loss = self.criterion(
+                raw_preds.float().view(B * T, V),
+                targets_golden.view(B * T)
+            )
 
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
             batch_tokens = lengths.sum().item()
@@ -145,7 +153,7 @@ class LMTrainer(BaseTrainer):
 
                 B, T, V = raw_preds.size()
                 loss = self.criterion(
-                    raw_preds.view(B * T, V),
+                    raw_preds.float().view(B * T, V),
                     targets_golden.view(B * T)
                 )
 
@@ -184,11 +192,32 @@ class LMTrainer(BaseTrainer):
         # Lazily build optimizer/scheduler if the user didn't set them explicitly
         self._ensure_optimizer_scheduler(train_dataloader)
 
-        best_val_loss = float('inf')
+        # If we're resuming from a checkpoint, use the stored training history
+        # to reconstruct the early-stopping state instead of starting fresh.
+        best_val_loss = self.best_metric if self.best_metric != float("inf") else float("inf")
         best_val_epoch = self.current_epoch
         no_improve_epochs = 0
-        # Default to a modest patience so runs don't burn through all epochs by default
-        early_stop_patience = self.config["training"].get("early_stop_patience", 5)
+
+        if self.training_history:
+            # Sort by epoch in case the history was appended out of order
+            history = sorted(self.training_history, key=lambda m: m.get("epoch", 0))
+
+            # Find the best recorded validation loss so far
+            val_losses = [m["val"].get("ce_loss_char") for m in history if "val" in m and "ce_loss_char" in m["val"]]
+            if val_losses:
+                best_val_loss = min(val_losses)
+                # Identify the epoch of the best validation loss
+                for m in reversed(history):
+                    if "val" in m and m["val"].get("ce_loss_char") == best_val_loss:
+                        best_val_epoch = m.get("epoch", best_val_epoch)
+                        break
+
+                # Count how many epochs have passed since the best checkpoint
+                last_epoch = history[-1].get("epoch", self.current_epoch)
+                no_improve_epochs = max(0, last_epoch - best_val_epoch)
+        # Early stopping is opt-in; defaults to disabled so longer runs aren't
+        # cut off prematurely when the user hasn't configured patience.
+        early_stop_patience = self.config["training"].get("early_stop_patience", None)
         early_stop_delta = self.config["training"].get("early_stop_min_delta", 0.0)
         load_best_after_train = self.config["training"].get("load_best_after_train", True)
         stopped_early = False
@@ -218,19 +247,23 @@ class LMTrainer(BaseTrainer):
             # Generated text
             self._save_generated_text(gen_results, f"val_epoch_{epoch}")
 
-            # Checkpoints
-            self.save_checkpoint("checkpoint-last-epoch-model.pth")
             val_loss = val_metrics["ce_loss_char"]
             if val_loss < (best_val_loss - early_stop_delta):
                 best_val_loss = val_loss
                 best_val_epoch = epoch
                 self.best_metric = val_loss
+                # Save best checkpoint with the epoch we've just finished recorded
                 self.save_checkpoint("checkpoint-best-metric-model.pth")
                 no_improve_epochs = 0
             else:
                 no_improve_epochs += 1
 
-            self.current_epoch += 1
+            # Advance epoch counter before persisting the "last epoch" checkpoint so
+            # resuming continues with the next epoch instead of repeating the one we
+            # just completed. This avoids double-counting scheduler/optimizer steps
+            # that can hurt validation perplexity after a resume.
+            self.current_epoch = epoch + 1
+            self.save_checkpoint("checkpoint-last-epoch-model.pth")
 
             # Early stopping
             if early_stop_patience is not None and no_improve_epochs >= early_stop_patience:
