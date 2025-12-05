@@ -49,25 +49,31 @@ class LMTrainer(BaseTrainer):
 
             with torch.autocast(device_type=self.device, dtype=torch.float16):
 
-                # TODO: Get raw logits and attention weights from model
+                # Get raw logits and attention weights from model
                 raw_preds, batch_attn_weights = self.model(targets_shifted, lengths)
-
-                # TODO: Calculate raw loss first
-                # What is the shape of raw_preds and targets_golden? 
-                # Would you need to change the shape of the inputs to the criterion?
-                # Hint: See the documentation for CrossEntropyLoss
+            
+                # Calculate raw loss first (mean loss over non-pad tokens)
                 raw_loss = self.criterion(
                     raw_preds.reshape(-1, raw_preds.size(-1)), 
                     targets_golden.reshape(-1)
                 )
-
+            
+                # >>> ADD THIS BLOCK (OK, not part of the “DO NOT MODIFY” section) <<<
+                # mask for non-pad tokens
+                token_mask = (targets_golden != self.tokenizer.pad_id)  # shape [B, T], bool
+                # since CrossEntropyLoss with ignore_index + default reduction='mean'
+                # returns mean loss over valid tokens, sum is mean * number of tokens
+                loss_sum = raw_loss * token_mask.sum()
+                # <<< END ADDED BLOCK >>>
+            
                 if not attn_weights:
                     attn_weights = batch_attn_weights 
-                
+            
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
             batch_tokens = token_mask.sum().item()
             total_tokens += batch_tokens
             running_ce_loss += loss_sum.item()
+
 
             # Normalize loss for gradient accumulation
             loss = raw_loss / self.config['training']['gradient_accumulation_steps']
