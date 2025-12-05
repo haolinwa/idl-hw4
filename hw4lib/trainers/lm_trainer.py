@@ -5,6 +5,7 @@ from tqdm import tqdm
 from typing import Dict, Tuple, Any, Optional, List
 from ..utils import create_scheduler
 from ..decoding.sequence_generator import SequenceGenerator
+from ..model import DecoderOnlyTransformer
 
 class LMTrainer(BaseTrainer):
     """
@@ -48,6 +49,13 @@ class LMTrainer(BaseTrainer):
     """
 
     def __init__(self, model, tokenizer, config, run_name, config_file, device=None):
+        if not isinstance(model, DecoderOnlyTransformer):
+            raise NotImplementedError(
+                "LMTrainer only supports DecoderOnlyTransformer models. "
+                "Please instantiate the expected architecture or extend the "
+                "trainer to handle your custom model."
+            )
+
         super().__init__(model, tokenizer, config, run_name, config_file, device)
         # TODO: Implement the __init__ method
         # TODO: Initialize the criterion

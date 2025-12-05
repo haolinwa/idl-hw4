@@ -13,6 +13,7 @@ import shutil
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple
 from torchinfo import summary
+import warnings
 
 
 class BaseTrainer(ABC):
@@ -171,7 +172,16 @@ class BaseTrainer(ABC):
                 # Write the summary string to file
                 f.write(str(model_summary))
             else:
-                raise NotImplementedError("Model architecture summary not implemented")
+                # Fallback: if the model type is unknown or doesn't support torchinfo
+                # summary generation with the provided inputs, record the string
+                # representation and warn so callers can choose a supported model.
+                warnings.warn(
+                    "Model architecture summary not implemented for type "
+                    f"{type(self.model).__name__}. Saving string representation "
+                    "instead; consider using DecoderOnlyTransformer or "
+                    "EncoderDecoderTransformer for full summaries."
+                )
+                f.write(str(self.model))
 
         # Create subdirectories
         checkpoint_dir = expt_root / 'checkpoints'
