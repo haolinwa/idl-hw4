@@ -81,14 +81,15 @@ class DecoderOnlyTransformer(nn.Module):
     A Pre-LN Decoder-Only Transformer model.
     '''
     def __init__(
-            self, 
-            num_layers: int, 
-            d_model: int, 
-            num_heads: int, 
-            d_ff: int, 
-            dropout: float, 
-            max_len: int, 
+            self,
+            num_layers: int,
+            d_model: int,
+            num_heads: int,
+            d_ff: int,
+            dropout: float,
+            max_len: int,
             num_classes: int,
+            pad_token_id: Optional[int] = None,
             weight_tying: bool = False,
             layer_drop_rate: float = 0.0,
     ):
@@ -99,6 +100,7 @@ class DecoderOnlyTransformer(nn.Module):
         self.layer_drop_rate = layer_drop_rate
         self.num_classes     = num_classes
         self.num_layers      = num_layers
+        self.pad_token_id    = pad_token_id
         
         # Decoder layers
         self.dec_layers = nn.ModuleList(
@@ -183,7 +185,11 @@ class DecoderOnlyTransformer(nn.Module):
             raise ValueError(
                 "score method is not supported during training, use forward instead"
             )
-        seq_out, _ = self.forward(batch_prompts, target_lengths=None)
+        target_lengths = None
+        if self.pad_token_id is not None:
+            target_lengths = (batch_prompts != self.pad_token_id).sum(dim=1)
+
+        seq_out, _ = self.forward(batch_prompts, target_lengths=target_lengths)
         return seq_out[:, -1, :]
 
     
