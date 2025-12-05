@@ -9,6 +9,8 @@ from .encoder_layers import SelfAttentionEncoderLayer
 from .speech_embedding import SpeechEmbedding
 import warnings
 from torchinfo import summary
+
+__all__ = ["DecoderOnlyTransformer", "EncoderDecoderTransformer"]
 '''
 TODO: Implement these Modules.
 
