@@ -51,12 +51,17 @@ class LMTrainer(BaseTrainer):
         super().__init__(model, tokenizer, config, run_name, config_file, device)
         # TODO: Implement the __init__ method
         # TODO: Initialize the criterion
-        # How would you set the ignore_index? 
+        # How would you set the ignore_index?
         # Use value in config to set the label_smoothing argument
         self.criterion = nn.CrossEntropyLoss(
             ignore_index=self.tokenizer.pad_id,
             label_smoothing=self.config['training'].get('label_smoothing', 0.0)
         )
+
+        # Ensure the language model knows the padding token so inference masks
+        # out padded positions (important for beam search padding).
+        if hasattr(self.model, 'pad_token_id'):
+            self.model.pad_token_id = self.tokenizer.pad_id
         # self.scaler = torch.cuda.amp.GradScaler(self.device)
 
     def _train_epoch(self, dataloader) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
