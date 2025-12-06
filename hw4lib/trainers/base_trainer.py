@@ -135,43 +135,53 @@ class BaseTrainer(ABC):
         # Copy config
         shutil.copy2(config_file, expt_root / "config.yaml")
 
-        # Save model architecture with torchinfo summary
+        # Save model architecture with torchinfo summary (with graceful fallback)
         with open(expt_root / "model_arch.txt", "w") as f:
-            # Get a sample input shape from your model's expected input
-            if isinstance(self.model, DecoderOnlyTransformer):
-                batch_size = self.config['data'].get('batch_size', 8)
-                max_len    = self.model.max_len
-                input_size = [(batch_size, max_len), (batch_size,)]
-                dtypes     = [torch.long, torch.long]
-                # Generate the summary
-                model_summary = summary(
-                    self.model,
-                    input_size=input_size,  # Adjust these dimensions based on your model's input
-                    dtypes=dtypes
-                )
-                # Write the summary string to file
-                f.write(str(model_summary))
-            elif isinstance(self.model, EncoderDecoderTransformer):
-                batch_size = self.config['data'].get('batch_size', 8)
-                max_len = 1000
-                num_feats = self.config['data']['num_feats']
-                input_data = [
-                    torch.randn(batch_size, max_len, num_feats).to(self.device), 
-                    torch.randint(0, self.model.num_classes, (batch_size, max_len//10)).to(self.device), 
-                    torch.randint(max_len//2, max_len, (batch_size,)).to(self.device), 
-                    torch.randint(max_len//20, max_len//10, (batch_size,)).to(self.device)
-                ]
-                dtypes = [torch.float32, torch.long, torch.long, torch.long]
-                # Generate the summary
-                model_summary = summary(
-                    self.model,
-                    input_data=input_data,  # Adjust these dimensions based on your model's input
-                    dtypes=dtypes
-                )
-                # Write the summary string to file
-                f.write(str(model_summary))
-            else:
-                raise NotImplementedError("Model architecture summary not implemented")
+            def _write_fallback(exc: Optional[Exception] = None):
+                reason = f"Torchinfo summary unavailable: {exc}" if exc else "Torchinfo summary unavailable"
+                msg = reason + "\nFalling back to model.__str__ representation."
+                print(msg)
+                f.write(msg + "\n\n")
+                f.write(str(self.model))
+
+            try:
+                # Get a sample input shape from your model's expected input
+                if isinstance(self.model, DecoderOnlyTransformer):
+                    batch_size = self.config['data'].get('batch_size', 8)
+                    max_len    = self.model.max_len
+                    input_size = [(batch_size, max_len), (batch_size,)]
+                    dtypes     = [torch.long, torch.long]
+                    # Generate the summary
+                    model_summary = summary(
+                        self.model,
+                        input_size=input_size,  # Adjust these dimensions based on your model's input
+                        dtypes=dtypes
+                    )
+                    # Write the summary string to file
+                    f.write(str(model_summary))
+                elif isinstance(self.model, EncoderDecoderTransformer):
+                    batch_size = self.config['data'].get('batch_size', 8)
+                    max_len = 1000
+                    num_feats = self.config['data']['num_feats']
+                    input_data = [
+                        torch.randn(batch_size, max_len, num_feats).to(self.device),
+                        torch.randint(0, self.model.num_classes, (batch_size, max_len//10)).to(self.device),
+                        torch.randint(max_len//2, max_len, (batch_size,)).to(self.device),
+                        torch.randint(max_len//20, max_len//10, (batch_size,)).to(self.device)
+                    ]
+                    dtypes = [torch.float32, torch.long, torch.long, torch.long]
+                    # Generate the summary
+                    model_summary = summary(
+                        self.model,
+                        input_data=input_data,  # Adjust these dimensions based on your model's input
+                        dtypes=dtypes
+                    )
+                    # Write the summary string to file
+                    f.write(str(model_summary))
+                else:
+                    _write_fallback()
+            except Exception as exc:
+                _write_fallback(exc)
 
         # Create subdirectories
         checkpoint_dir = expt_root / 'checkpoints'
