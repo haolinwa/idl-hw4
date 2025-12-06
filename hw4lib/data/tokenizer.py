@@ -81,21 +81,25 @@ class H4Tokenizer:
             raise ValueError(f"token_type must be one of {self.VALID_TYPES}")
 
         self.token_type = token_type
-        token_path = Path(token_map[token_type]).expanduser()
+        configured_path = Path(token_map[token_type]).expanduser()
 
-        # Try resolving the tokenizer path relative to the packaged tokenizer_jsons
-        # directory if the provided path does not exist. This helps when the
-        # configuration supplies just the filename or a path relative to a
-        # different working directory.
-        if not token_path.exists():
-            candidate = Path(__file__).parent / "tokenizer_jsons" / token_path.name
-            if candidate.exists():
-                token_path = candidate
-            else:
-                raise FileNotFoundError(
-                    f"Tokenizer file not found at '{token_map[token_type]}'. "
-                    f"Checked absolute '{token_path.resolve()}' and packaged '{candidate}'."
-                )
+        # Resolve the tokenizer path by checking a few likely locations to make
+        # notebook- and repo-relative configs robust. We intentionally keep the
+        # search small to avoid surprising matches.
+        search_candidates = [
+            configured_path,
+            Path.cwd() / configured_path,
+            Path(__file__).parent / configured_path,
+            Path(__file__).parent / "tokenizer_jsons" / configured_path.name,
+        ]
+
+        token_path = next((p for p in search_candidates if p.exists()), None)
+        if token_path is None:
+            details = " | ".join(str(p) for p in search_candidates)
+            raise FileNotFoundError(
+                f"Tokenizer file not found for token_type '{token_type}'. "
+                f"Checked: {details}"
+            )
 
         self.tokenizer = Tokenizer.from_file(str(token_path))
 
