@@ -9,42 +9,6 @@ from ..decoding.sequence_generator import SequenceGenerator
 class LMTrainer(BaseTrainer):
     """
     Language Model Trainer class that handles the training, validation, and generation loops.
-
-    This trainer implements:
-    1. Training loop with gradient accumulation and mixed precision training
-    2. Validation loop for model evaluation
-    3. Generation capabilities with different decoding strategies
-
-    You only need to fill in the TODOs in the code. 
-    Please do not modify any other code without understanding what you are doing.
-    
-    Implementation Tasks:
-    - TODO: Initialize the criterion in __init__
-    - TODO: Implement key parts of the training loop in _train_epoch
-    - TODO: Use your greedy generation implementation in generate
-    - TODO: Implement key parts of the the validation loop in _validate_epoch
-    - TODO: Implement key parts of the full training loop in train
-
-    Implementation Notes:
-    1. For __init__:
-        - Initialize CrossEntropyLoss with appropriate padding index and label smoothing
-        
-    2. For _train_epoch:
-        - Unpack the batch (shifted inputs, golden targets, lengths)
-        - Get model predictions and attention weights
-        - Calculate loss
-        
-    3. For _validate_epoch:
-        - Similar to _train_epoch but without gradient calculations
-        - Use torch.inference_mode() for validation
-        
-    4. For train:
-        - Implement the epoch loop with training and validation and generation
-        
-    5. For generate:
-        - Use the greedy decoding method you implemented in SequenceGenerator
-        - Post-process sequences using appropriate tokenizer methods
-        - Format results
     """
 
     def __init__(self, model, tokenizer, config, run_name, config_file, device=None):
@@ -62,11 +26,6 @@ class LMTrainer(BaseTrainer):
     def _train_epoch(self, dataloader) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """
         Train for one epoch.
-        
-        Args:
-            dataloader: DataLoader for training data
-        Returns:
-            Tuple[Dict[str, float], Dict[str, torch.Tensor]]: Training metrics and attention weights
         """
 
         # TODO: In-fill the _train_epoch method
@@ -81,8 +40,7 @@ class LMTrainer(BaseTrainer):
         self.optimizer.zero_grad()
         attn_weights = {} 
         for i, batch in enumerate(dataloader):
-            # TODO: Unpack batch from the dataloader
-            # TODO: Move the batch elements to self.device
+            # Unpack and move batch to device
             targets_shifted, targets_golden, lengths = batch
             targets_shifted = targets_shifted.to(self.device) 
             targets_golden = targets_golden.to(self.device) 
@@ -107,24 +65,23 @@ class LMTrainer(BaseTrainer):
                     attn_weights = batch_attn_weights 
                 
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
-            batch_tokens = lengths.sum().item()
+            batch_tokens = token_mask.sum().item()
             total_tokens += batch_tokens
-            running_ce_loss += raw_loss.item() * batch_tokens
+            running_ce_loss += loss_sum.item()
 
             # Normalize loss for gradient accumulation
             loss = raw_loss / self.config['training']['gradient_accumulation_steps']
             
             # TODO: Backpropagate the loss
             self.scaler.scale(loss).backward()
-        
+
             # Only update weights after accumulating enough gradients
             if (i + 1) % self.config['training']['gradient_accumulation_steps'] == 0:
                 self.scaler.step(self.optimizer)
-                # Only step scheduler here if it's not ReduceLROnPlateau
                 if not isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step()
                 self.scaler.update()
-                self.optimizer.zero_grad()  # Reset gradients after update
+                self.optimizer.zero_grad()
 
             # Calculate metrics
             avg_ce_loss = running_ce_loss / total_tokens
@@ -149,7 +106,7 @@ class LMTrainer(BaseTrainer):
             self.scaler.update()
             self.optimizer.zero_grad()
 
-        # Compute final metrics
+        # Final metrics
         avg_ce_loss = running_ce_loss / total_tokens
         avg_ce_loss_char = avg_ce_loss / dataloader.dataset.get_avg_chars_per_token()
         avg_perplexity_token = torch.exp(torch.tensor(avg_ce_loss))
@@ -167,11 +124,6 @@ class LMTrainer(BaseTrainer):
     def _validate_epoch(self, dataloader):
         """
         Validate for one epoch.
-        
-        Args:
-            dataloader: DataLoader for validation data
-        Returns:
-            Tuple[Dict[str, float], Dict[str, torch.Tensor]]: Validation metrics and attention weights
         """
 
         # TODO: In-fill the _validate_epoch method
@@ -226,7 +178,6 @@ class LMTrainer(BaseTrainer):
             del targets_shifted, targets_golden, lengths, raw_preds, loss
             torch.cuda.empty_cache()
 
-        # Compute final metrics
         avg_ce_loss = running_ce_loss / total_tokens
         avg_ce_loss_char = avg_ce_loss / dataloader.dataset.get_avg_chars_per_token()
         avg_perplexity_token = torch.exp(torch.tensor(avg_ce_loss))
@@ -244,11 +195,6 @@ class LMTrainer(BaseTrainer):
     def train(self, train_dataloader, val_dataloader, epochs: int):
         """
         Full training loop for language model training.
-        
-        Args:
-            train_dataloader: DataLoader for training data
-            val_dataloader: DataLoader for validation data
-            epochs: int, number of epochs to train
         """
         if self.scheduler is None:
             raise ValueError("Scheduler is not initialized, initialize it first!")
@@ -260,6 +206,13 @@ class LMTrainer(BaseTrainer):
 
         # Training loop
         best_val_loss = float('inf')
+        best_val_epoch = self.current_epoch
+        no_improve_epochs = 0
+        # Default to a modest patience so runs don't burn through all epochs by default
+        early_stop_patience = self.config["training"].get("early_stop_patience", 5)
+        early_stop_delta = self.config["training"].get("early_stop_min_delta", 0.0)
+        load_best_after_train = self.config["training"].get("load_best_after_train", True)
+        stopped_early = False
 
         for epoch in range(self.current_epoch, self.current_epoch + epochs):
             
@@ -269,10 +222,10 @@ class LMTrainer(BaseTrainer):
             # TODO: Validate
             val_metrics, val_attn = self._validate_epoch(val_dataloader)
 
-            # TODO: Generate with the validation set
+            # Generate with validation set (default: greedy/sampling/beam based on config)
             gen_results = self.generate(val_dataloader)
-            
-            # Step ReduceLROnPlateau scheduler with validation loss
+
+            # Step ReduceLROnPlateau if used
             if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 self.scheduler.step(val_metrics['ce_loss_char'])
 
@@ -299,36 +252,43 @@ class LMTrainer(BaseTrainer):
             val_loss = val_metrics['ce_loss_char']
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                best_val_epoch = epoch
                 self.best_metric = val_loss
                 self.save_checkpoint('checkpoint-best-metric-model.pth')
 
             self.current_epoch += 1
 
+            # Early stopping
+            if early_stop_patience is not None and no_improve_epochs >= early_stop_patience:
+                print(
+                    f"Early stopping triggered after {early_stop_patience} epochs "
+                    f"without improvement (best at epoch {best_val_epoch})."
+                )
+                # Restore best checkpoint for downstream evaluation
+                try:
+                    self.load_checkpoint("checkpoint-best-metric-model.pth")
+                except Exception as e:
+                    print(f"Warning: failed to reload best checkpoint: {e}")
+                stopped_early = True
+                break
+
+        # If we finished all epochs without tripping early stopping, reload the best
+        # checkpoint so downstream evaluation uses the lowest validation loss.
+        if load_best_after_train and not stopped_early and self.best_model_path.exists():
+            try:
+                self.load_checkpoint(self.best_model_path.name)
+            except Exception as e:
+                print(f"Warning: failed to reload best checkpoint after training: {e}")
 
     def evaluate(self, test_dataloader):
-        """
-        Evaluate the model on the test set.
-        
-        Args:
-            test_dataloader: DataLoader for test data
-        Returns:
-            Tuple[Dict[str, float], Dict[str, Dict[str, Dict]]]: A tuple containing:
-                - test_metrics: Test metrics
-                - generation_results: Generation results for each config
-        """
         test_metrics, test_attn = self._validate_epoch(test_dataloader)
 
-        # Log metrics
-        metrics = {
-            'test': test_metrics
-        }
-        self._log_metrics(metrics, self.current_epoch)  
+        metrics = {'test': test_metrics}
+        self._log_metrics(metrics, self.current_epoch)
 
-        # Save attention plots
         test_attn_keys = list(test_attn.keys())
         self._save_attention_plot(test_attn[test_attn_keys[0]][0], self.current_epoch, "test_self")
 
-        # Generate with evaluation configs and collect results
         generation_results = {}
         eval_configs = self._get_evaluation_generation_configs()
         for config_name, config in eval_configs.items():
@@ -344,21 +304,6 @@ class LMTrainer(BaseTrainer):
     def generate(self, dataloader, generation_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Evaluate the model by generating sequences from prompts.
-        
-        Args:
-            dataloader: DataLoader containing the evaluation data
-            generation_config: Optional dictionary containing generation parameters:
-                - num_samples: int, number of samples to generate
-                - prompt_length: int, length of prompts
-                - seed: int, random seed
-                - max_length: int, maximum sequence length
-                - temperature: float, sampling temperature
-                - beam_width: int, beam search width
-                - repeat_penalty: float, penalty for repeated tokens
-                - top_k: int, top-k filtering value
-                - top_p: float, nucleus sampling threshold
-        Returns:
-            Dict containing generation results with prompts, originals, and generated sequences
         """
 
         # TODO: In-fill the generate method
@@ -380,7 +325,6 @@ class LMTrainer(BaseTrainer):
                 'top_p': 0.0    
             }
 
-        # Create sequence generator
         generator = SequenceGenerator(
             score_fn=lambda x: self.model.score(x),
             tokenizer=self.tokenizer,
@@ -491,3 +435,5 @@ class LMTrainer(BaseTrainer):
             'beam': beam_config,
             'sample': sample_config
         }
+
+
