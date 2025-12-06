@@ -47,23 +47,28 @@ class LMTrainer(BaseTrainer):
             lengths = lengths.to(self.device) 
         
 
+            # Prepare metrics variables for the fixed section below
+            token_mask = targets_golden != self.tokenizer.pad_id
+
             with torch.autocast(device_type=self.device, dtype=torch.float16):
 
                 # TODO: Get raw logits and attention weights from model
                 raw_preds, batch_attn_weights = self.model(targets_shifted, lengths)
 
                 # TODO: Calculate raw loss first
-                # What is the shape of raw_preds and targets_golden? 
+                # What is the shape of raw_preds and targets_golden?
                 # Would you need to change the shape of the inputs to the criterion?
                 # Hint: See the documentation for CrossEntropyLoss
                 raw_loss = self.criterion(
-                    raw_preds.reshape(-1, raw_preds.size(-1)), 
+                    raw_preds.reshape(-1, raw_preds.size(-1)),
                     targets_golden.reshape(-1)
                 )
 
                 if not attn_weights:
-                    attn_weights = batch_attn_weights 
-                
+                    attn_weights = batch_attn_weights
+
+                loss_sum = raw_loss * token_mask.sum()
+
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
             batch_tokens = token_mask.sum().item()
             total_tokens += batch_tokens
