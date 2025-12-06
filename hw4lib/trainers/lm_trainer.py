@@ -57,13 +57,17 @@ class LMTrainer(BaseTrainer):
                 # Would you need to change the shape of the inputs to the criterion?
                 # Hint: See the documentation for CrossEntropyLoss
                 raw_loss = self.criterion(
-                    raw_preds.reshape(-1, raw_preds.size(-1)), 
+                    raw_preds.reshape(-1, raw_preds.size(-1)),
                     targets_golden.reshape(-1)
                 )
 
                 if not attn_weights:
-                    attn_weights = batch_attn_weights 
-                
+                    attn_weights = batch_attn_weights
+
+                # Prepare metrics variables for the fixed section below
+                token_mask = targets_golden != self.tokenizer.pad_id
+                loss_sum = raw_loss * token_mask.sum()
+
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
             batch_tokens = token_mask.sum().item()
             total_tokens += batch_tokens
