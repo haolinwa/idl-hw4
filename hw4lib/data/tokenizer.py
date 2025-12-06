@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal, List, Dict
 from tokenizers import Tokenizer, decoders, processors
 
@@ -80,7 +81,27 @@ class H4Tokenizer:
             raise ValueError(f"token_type must be one of {self.VALID_TYPES}")
 
         self.token_type = token_type
-        self.tokenizer = Tokenizer.from_file(token_map[token_type])
+        configured_path = Path(token_map[token_type]).expanduser()
+
+        # Resolve the tokenizer path by checking a few likely locations to make
+        # notebook- and repo-relative configs robust. We intentionally keep the
+        # search small to avoid surprising matches.
+        search_candidates = [
+            configured_path,
+            Path.cwd() / configured_path,
+            Path(__file__).parent / configured_path,
+            Path(__file__).parent / "tokenizer_jsons" / configured_path.name,
+        ]
+
+        token_path = next((p for p in search_candidates if p.exists()), None)
+        if token_path is None:
+            details = " | ".join(str(p) for p in search_candidates)
+            raise FileNotFoundError(
+                f"Tokenizer file not found for token_type '{token_type}'. "
+                f"Checked: {details}"
+            )
+
+        self.tokenizer = Tokenizer.from_file(str(token_path))
 
         # Configure decoder based on tokenizer type
         if token_type != 'char':
