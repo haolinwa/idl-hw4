@@ -53,8 +53,11 @@ class LMTrainer(BaseTrainer):
         # TODO: Initialize the criterion
         # How would you set the ignore_index? 
         # Use value in config to set the label_smoothing argument
-        self.criterion = NotImplementedError
-        raise NotImplementedError # Remove once implemented
+        self.criterion = nn.CrossEntropyLoss(
+            ignore_index=self.tokenizer.pad_id,
+            label_smoothing=self.config['training'].get('label_smoothing', 0.0)
+        )
+        # self.scaler = torch.cuda.amp.GradScaler(self.device)
 
     def _train_epoch(self, dataloader) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """
@@ -67,7 +70,6 @@ class LMTrainer(BaseTrainer):
         """
 
         # TODO: In-fill the _train_epoch method
-        raise NotImplementedError # Remove once implemented
         
         # Initialize training variables
         self.model.train()
@@ -77,23 +79,32 @@ class LMTrainer(BaseTrainer):
 
         # Only zero gradients when starting a new accumulation cycle
         self.optimizer.zero_grad()
-
+        attn_weights = {} 
         for i, batch in enumerate(dataloader):
             # TODO: Unpack batch from the dataloader
             # TODO: Move the batch elements to self.device
             targets_shifted, targets_golden, lengths = batch
+            targets_shifted = targets_shifted.to(self.device) 
+            targets_golden = targets_golden.to(self.device) 
+            lengths = lengths.to(self.device) 
         
 
             with torch.autocast(device_type=self.device, dtype=torch.float16):
 
                 # TODO: Get raw logits and attention weights from model
-                raw_preds, attn_weights = NotImplementedError
+                raw_preds, batch_attn_weights = self.model(targets_shifted, lengths)
 
                 # TODO: Calculate raw loss first
                 # What is the shape of raw_preds and targets_golden? 
                 # Would you need to change the shape of the inputs to the criterion?
                 # Hint: See the documentation for CrossEntropyLoss
-                raw_loss = NotImplementedError
+                raw_loss = self.criterion(
+                    raw_preds.reshape(-1, raw_preds.size(-1)), 
+                    targets_golden.reshape(-1)
+                )
+
+                if not attn_weights:
+                    attn_weights = batch_attn_weights 
                 
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
             batch_tokens = lengths.sum().item()
@@ -104,7 +115,7 @@ class LMTrainer(BaseTrainer):
             loss = raw_loss / self.config['training']['gradient_accumulation_steps']
             
             # TODO: Backpropagate the loss
-            self.scaler = NotImplementedError
+            self.scaler.scale(loss).backward()
         
             # Only update weights after accumulating enough gradients
             if (i + 1) % self.config['training']['gradient_accumulation_steps'] == 0:
@@ -164,8 +175,6 @@ class LMTrainer(BaseTrainer):
         """
 
         # TODO: In-fill the _validate_epoch method
-
-        raise NotImplementedError # Remove once implemented
         
         # Initialize validation variables
         self.model.eval()
@@ -173,21 +182,31 @@ class LMTrainer(BaseTrainer):
         running_ce_loss = 0.0
         total_tokens = 0
 
+        attn_weights = {}
         for i, batch in enumerate(dataloader):
             # TODO: Unpack batch
             # TODO: Move the batch elements to self.device
             targets_shifted, targets_golden, lengths = batch
+            targets_shifted = targets_shifted.to(self.device)
+            targets_golden = targets_golden.to(self.device)
+            lengths = lengths.to(self.device)
 
             # Forward pass
             with torch.inference_mode():
                 # TODO: Get raw predictions and attention weights from model
-                raw_preds, attn_weights = NotImplementedError
+                raw_preds, batch_attn_weights = self.model(targets_shifted, lengths)
 
                 # TODO: Calculate loss
                 # What is the shape of raw_preds and targets_golden? 
                 # Would you need to change the shape of the inputs to the criterion?
                 # Hint: See the documentation for CrossEntropyLoss
-                loss = NotImplementedError
+                loss = self.criterion(
+                    raw_preds.reshape(-1, raw_preds.size(-1)),
+                    targets_golden.reshape(-1)
+                )
+
+                if not attn_weights:
+                    attn_weights = batch_attn_weights
 
             # Calculate metrics
             batch_tokens = lengths.sum().item()
@@ -238,7 +257,6 @@ class LMTrainer(BaseTrainer):
             raise ValueError("Optimizer is not initialized, initialize it first!")
         
         # TODO: In-fill the train method
-        raise NotImplementedError # Remove once implemented
 
         # Training loop
         best_val_loss = float('inf')
@@ -246,13 +264,13 @@ class LMTrainer(BaseTrainer):
         for epoch in range(self.current_epoch, self.current_epoch + epochs):
             
             # TODO: Train for one epoch
-            train_metrics, train_attn = NotImplementedError
+            train_metrics, train_attn = self._train_epoch(train_dataloader)
             
             # TODO: Validate
-            val_metrics, val_attn = NotImplementedError
+            val_metrics, val_attn = self._validate_epoch(val_dataloader)
 
             # TODO: Generate with the validation set
-            gen_results = NotImplementedError
+            gen_results = self.generate(val_dataloader)
             
             # Step ReduceLROnPlateau scheduler with validation loss
             if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -346,7 +364,7 @@ class LMTrainer(BaseTrainer):
         # TODO: In-fill the generate method
         # You just need to implement the greedy search generation
         # See the TODO below
-        raise NotImplementedError # Remove once implemented
+        
 
         if generation_config is None:
             # Greedy search (default)
@@ -356,7 +374,7 @@ class LMTrainer(BaseTrainer):
                 'seed': 11785,
                 'max_length': self.model.max_len,
                 'temperature': 1.0,
-                'beam_width': 1,
+                'beam_width': 5,
                 'repeat_penalty': 1.0,
                 'top_k': 0,
                 'top_p': 0.0    
@@ -383,20 +401,28 @@ class LMTrainer(BaseTrainer):
         with torch.inference_mode():
             if generation_config.get('top_k', 0) > 0 or generation_config.get('top_p', 0) > 0:
                 print("Generating with sampling...")
-                seqs, scores = NotImplementedError, NotImplementedError
+                seqs, scores = None, None 
                 raise NotImplementedError # Remove if you implemented the sampling method
             elif generation_config.get('beam_width', 1) > 1:
                 print("Generating with beam search...")
-                seqs, scores = NotImplementedError, NotImplementedError
-                raise NotImplementedError # Remove if you implemented the beam search method
+                seqs, scores = generator.generate_beam(
+                    prompts, 
+                    beam_width=generation_config.get('beam_width', 5),
+                    temperature=generation_config.get('temperature', 1.0),
+                    repeat_penalty=generation_config.get('repeat_penalty', 1.0)
+                )
+                # raise NotImplementedError # Remove if you implemented the beam search method
                 # Take best beam and score
                 seqs = seqs[:, 0]
                 scores = scores[:, 0]
             else:
                 # TODO: Use the prompts and the generate_greedy method you implemented in the SequenceGenerator class to generate sequences
                 print("Generating with greedy search...")
-                seqs, scores = NotImplementedError, NotImplementedError
-                raise NotImplementedError # Remove if you implemented the greedy search method
+                seqs, scores = generator.generate_greedy(
+                    prompts,
+                    temperature=generation_config.get('temperature', 1.0),
+                    repeat_penalty=generation_config.get('repeat_penalty', 1.0)
+                )
 
         # Post-process sequences (trim upto EOS token)
         processed_seqs = generator.post_process_sequence(seqs, self.tokenizer)
