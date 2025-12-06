@@ -49,6 +49,7 @@ class LMTrainer(BaseTrainer):
 
             # Prepare metrics variables for the fixed section below
             token_mask = targets_golden != self.tokenizer.pad_id
+            token_count = token_mask.sum()
 
             with torch.autocast(device_type=self.device, dtype=torch.float16):
 
@@ -67,7 +68,7 @@ class LMTrainer(BaseTrainer):
                 if not attn_weights:
                     attn_weights = batch_attn_weights
 
-                loss_sum = raw_loss * token_mask.sum()
+                loss_sum = raw_loss * token_count
 
             # Calculate metrics with raw loss (DO NOT MODIFY THIS)
             batch_tokens = token_mask.sum().item()
