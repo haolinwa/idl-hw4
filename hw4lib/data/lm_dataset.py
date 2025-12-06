@@ -46,6 +46,7 @@ class LMDataset(Dataset):
             config (dict): Configuration dictionary containing dataset settings
             tokenizer (H4Tokenizer): Tokenizer for encoding/decoding text
         """
+        # TODO: Implement __init__
         
         # Store configuration and other args
         # DO NOT MODIFY
@@ -55,39 +56,22 @@ class LMDataset(Dataset):
 
         # TODO: Get tokenizer ids for special tokens (eos, sos, pad)
         # Hint: See the class members of the H4Tokenizer class
-        def get_attr(obj, names):
-            for n in names:
-                if hasattr(obj, n):
-                    return getattr(obj, n)
-            raise AttributeError(f"None of {names} found on tokenizer")
-
-        self.eos_token = get_attr(tokenizer, ["eos_id", "eos_token_id", "EOS_ID"])
-        self.sos_token = get_attr(tokenizer, ["sos_id", "sos_token_id", "SOS_ID"])
-        self.pad_token = get_attr(tokenizer, ["pad_id", "pad_token_id", "PAD_ID"])
+        self.eos_token = self.tokenizer.eos_id
+        self.sos_token = self.tokenizer.sos_id
+        self.pad_token = self.tokenizer.pad_id
 
         # Set up data paths 
         # TODO: Join root and partition to get the text directory
-        self.text_dir = os.path.join(self.config["root"], self.partition)
+        self.text_dir = os.path.join(self.config['root'], self.partition)
 
         # TODO: Get all text files in the text directory in sorted order  
-        self.text_files = sorted(
-            os.path.join(self.text_dir, f)
-            for f in os.listdir(self.text_dir)
-            if f.endswith(".npy")
-        )
+        self.text_files = sorted([
+            os.path.join(self.text_dir, fname) for fname in os.listdir(self.text_dir) if fname.endswith('.npy')
+        ])
 
         # TODO: Take subset
-        subset_key_candidates = [
-            "subset_size",
-            f"{self.partition}_subset_size",
-            "subset",
-            f"{self.partition}_subset",
-        ]
-        subset_size = self.config.get("subset_size", None)
+        subset_size = self.config.get('subset_size', None)
         if subset_size is not None:
-            self.text_files = self.text_files[:int(subset_size)]
-
-        if subset_size is not None and subset_size > 0:
             self.text_files = self.text_files[:subset_size]
 
         # Initialize lists to store transcripts
@@ -104,8 +88,7 @@ class LMDataset(Dataset):
         for file in tqdm(self.text_files):
             # TODO: Load the transcript
             # Note: Use np.load to load the numpy array and convert to list and then join to string 
-            arr = np.load(file, allow_pickle=True)
-            transcript = "".join(arr.tolist())
+            transcript = ''.join(np.load(file).tolist())
             
             # Track character count (before tokenization)
             # DO NOT MODIFY
@@ -123,12 +106,8 @@ class LMDataset(Dataset):
             self.text_max_len = max(self.text_max_len, len(tokenized)+1)
             
             # TODO: Create shifted and golden versions by adding sos and eos tokens
-            self.transcripts_shifted.append(
-                [self.sos_token] + tokenized
-            )
-            self.transcripts_golden.append(
-                tokenized + [self.eos_token]
-            )
+            self.transcripts_shifted.append([self.sos_token] + tokenized)
+            self.transcripts_golden.append(tokenized + [self.eos_token])
 
         # Calculate average characters per token
         # DO NOT MODIFY
@@ -191,15 +170,11 @@ class LMDataset(Dataset):
         shifted_transcripts, golden_transcripts = zip(*batch)
         
         # TODO: Record the sequence lengths before padding
-        lengths = torch.LongTensor([seq.size(0) for seq in shifted_transcripts]) # (B)
+        lengths = torch.LongTensor([seq.size(0) for seq in shifted_transcripts])
 
         # TODO: Pad sequences (use torch.nn.utils.rnn.pad_sequence and pad with pad_token)
-        padded_shifted = pad_sequence(
-            shifted_transcripts, batch_first=True, padding_value=self.pad_token
-        ) # (B, T)
-        padded_golden  = pad_sequence(
-            golden_transcripts, batch_first=True, padding_value=self.pad_token
-        ) # (B, T)
+        padded_shifted = pad_sequence(shifted_transcripts, batch_first=True, padding_value=self.pad_token)
+        padded_golden  = pad_sequence(golden_transcripts, batch_first=True, padding_value=self.pad_token)
 
         # TODO: Return the padded shifted, padded golden, and lengths
         return padded_shifted, padded_golden, lengths
